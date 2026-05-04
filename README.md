@@ -1,4 +1,4 @@
-# claude-in-codex
+# codex-in-claude
 
 A Claude Code skill for getting a second opinion on plans from Codex. Claude reads your plan, sends it to Codex for review, then mediates the feedback — agreeing, pushing back, or negotiating across multiple rounds — instead of blindly passing the output through.
 
@@ -21,16 +21,16 @@ Copy `SKILL.md` into your Claude Code skills directory:
 
 ```bash
 mkdir -p ~/.claude/skills/plan-check
-curl -fsSL https://raw.githubusercontent.com/ytubecoder/claude-in-codex/main/SKILL.md \
+curl -fsSL https://raw.githubusercontent.com/ytubecoder/codex-in-claude/main/SKILL.md \
   -o ~/.claude/skills/plan-check/SKILL.md
 ```
 
 Or clone and symlink:
 
 ```bash
-git clone https://github.com/ytubecoder/claude-in-codex.git
+git clone https://github.com/ytubecoder/codex-in-claude.git
 mkdir -p ~/.claude/skills/plan-check
-ln -s "$(pwd)/claude-in-codex/SKILL.md" ~/.claude/skills/plan-check/SKILL.md
+ln -s "$(pwd)/codex-in-claude/SKILL.md" ~/.claude/skills/plan-check/SKILL.md
 ```
 
 Restart Claude Code (or start a new session) to pick up the skill.
