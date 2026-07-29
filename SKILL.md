@@ -165,10 +165,12 @@ Build a follow-up prompt that:
 ### Codex follow-up
 
 ```bash
-cat <<'PROMPT_EOF' | codex exec resume --last -s read-only -
+cat <<'PROMPT_EOF' | codex exec resume --last -c sandbox_mode="read-only" -
 $FOLLOW_UP_PROMPT
 PROMPT_EOF
 ```
+
+(`codex exec resume` accepts no `-s`/`--sandbox` flag — the sandbox must be set via the `-c sandbox_mode=...` config override.)
 
 ### Grok follow-up
 
