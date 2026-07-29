@@ -1,4 +1,4 @@
-# codex-and-grok-in-claude (now with gemini and peons)
+# codex-and-grok-and-gemini-in-claude (now with peons)
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Works with Claude Code](https://img.shields.io/badge/works%20with-Claude%20Code-blueviolet)
