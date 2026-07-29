@@ -265,6 +265,50 @@ cmd_diff() {
   git -C "$wt" diff "$(meta_get "$slug" base_sha)" HEAD
 }
 
+poke_prompt() {
+  cat <<EOF
+Revision request from your reviewer on the work you already did in this worktree:
+
+$feedback
+
+Apply the requested changes and commit them to the current branch. Update PEON_REPORT.md to reflect the revision and commit that too. Same rules as before: leave the worktree clean, do not push, do not switch branches.
+EOF
+}
+
+run_fake_resume() {
+  local slug="$1" wt="$2" pf="$3"
+  [ "${PEON_FAKE_NOOP:-0}" = "1" ] && return 0          # provider "succeeds" without doing anything
+  ( cd "$wt" \
+    && cat "$pf" >> "FAKE_WORK-$slug.txt" \
+    && git add "FAKE_WORK-$slug.txt" && git commit -qm "fake: apply feedback" \
+    && printf '\nrevised per feedback.\n' >> PEON_REPORT.md \
+    && git add PEON_REPORT.md && git commit -qm "fake: update report" )
+}
+
+cmd_poke() {
+  local slug="${1:-}" feedback="${2:-}"
+  [ -n "$slug" ] || die "usage: peon poke <slug> \"<feedback>\""
+  [ -n "$feedback" ] || die "no feedback given"
+  local wt provider session pf pre
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  provider="$(meta_get "$slug" provider)"
+  session="$(meta_get "$slug" session)"
+  [ -n "$session" ] || die "no session recorded for $slug (dispatch failed before completing) — 'peon scrap $slug' and re-dispatch"
+  pf="$LOG_ROOT/$slug.poke.md"
+  mkdir -p "$LOG_ROOT"
+  poke_prompt > "$pf"
+  pre="$(git -C "$wt" rev-parse HEAD)"                   # gate ref: the tip BEFORE this poke
+  case "$provider" in
+    fake)  run_fake_resume "$slug" "$wt" "$pf" ;;
+    codex) die "codex resume not implemented yet" ;;
+    grok)  die "grok resume not implemented yet" ;;
+    *) die "unknown provider in metadata: $provider" ;;
+  esac
+  require_peon_contract "$wt" "$pre"
+  echo "poked $slug — review with: peon report $slug"
+}
+
 cmd="${1:-}"
 [ -n "$cmd" ] || { usage >&2; exit 1; }
 shift || true
@@ -274,7 +318,7 @@ case "$cmd" in
   list)     cmd_list "$@" ;;
   report)   cmd_report "$@" ;;
   diff)     cmd_diff "$@" ;;
-  poke)     die "not implemented yet" ;;
+  poke)     cmd_poke "$@" ;;
   merge)    die "not implemented yet" ;;
   scrap)    die "not implemented yet" ;;
   help|-h|--help) usage ;;

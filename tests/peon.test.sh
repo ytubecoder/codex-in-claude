@@ -79,5 +79,20 @@ t  "report prints diffstat"        sh -c "'$PEON' report listme | grep -q 'FAKE_
 t  "diff shows content"            sh -c "'$PEON' diff listme | grep -q 'list me'"
 tf "report unknown slug fails"     "$PEON" report nosuchpeon
 
+# --- Task 4: poke ---
+fresh_home
+R="$(mkrepo)"
+"$PEON" dispatch fake "build the widget" --repo "$R" --slug widget >/dev/null 2>&1
+WT="$PEON_HOME/worktrees/$(basename "$R")-widget"
+BEFORE=$(git -C "$WT" rev-list --count HEAD)
+t  "poke succeeds"                 "$PEON" poke widget "make it rounder"
+AFTER=$(git -C "$WT" rev-list --count HEAD)
+t  "poke added commits"            test "$AFTER" -gt "$BEFORE"
+t  "feedback applied"              sh -c "grep -q 'make it rounder' '$WT/FAKE_WORK-widget.txt'"
+t  "report updated"                sh -c "grep -q 'revised' '$WT/PEON_REPORT.md'"
+tf "no-op poke trips gate"         env PEON_FAKE_NOOP=1 "$PEON" poke widget "do nothing"
+tf "poke unknown slug fails"       "$PEON" poke nosuchpeon "feedback"
+tf "poke without feedback fails"   "$PEON" poke widget
+
 echo; echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]
