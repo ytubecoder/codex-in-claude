@@ -65,5 +65,19 @@ t  "no stale reservation left"     sh -c "test ! -f '$PEON_HOME/meta/badbase.jso
 tf "contract gate trips on dirt"   env PEON_FAKE_DIRTY=1 "$PEON" dispatch fake "dirty task" --repo "$R" --slug dirtyp
 t  "dirty peon worktree preserved" test -d "$PEON_HOME/worktrees/$(basename "$R")-dirtyp"
 
+# --- Task 3: list / report / diff ---
+fresh_home
+R="$(mkrepo)"
+"$PEON" dispatch fake "list me" --repo "$R" --slug listme >/dev/null 2>&1
+t  "list shows slug"               sh -c "'$PEON' list | grep -q listme"
+t  "list shows provider"           sh -c "'$PEON' list | grep -q fake"
+t  "list --repo filters in"        sh -c "'$PEON' list --repo '$R' | grep -q listme"
+RO="$(mkrepo)"
+t  "list --repo filters out"       sh -c "! '$PEON' list --repo '$RO' | grep -q listme"
+t  "report prints report"          sh -c "'$PEON' report listme | grep -q 'Peon Report'"
+t  "report prints diffstat"        sh -c "'$PEON' report listme | grep -q 'FAKE_WORK-listme.txt'"
+t  "diff shows content"            sh -c "'$PEON' diff listme | grep -q 'list me'"
+tf "report unknown slug fails"     "$PEON" report nosuchpeon
+
 echo; echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]

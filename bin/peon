@@ -194,15 +194,86 @@ cmd_dispatch() {
   echo "review with: peon report $slug"
 }
 
+meta_get() {
+  local mf="$META_ROOT/$1.json"
+  [ -f "$mf" ] || die "no peon found with slug: $1 (see 'peon list')"
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "$mf" "$2"
+}
+
+find_wt() { meta_get "$1" worktree; }
+
+require_wt() {
+  [ -d "$1" ] || die "worktree missing for $2: $1 (orphaned — 'peon scrap $2' to clean up)"
+}
+
+cmd_list() {
+  local filter=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) [ -n "${2:-}" ] || die "--repo needs a value"; filter="$(resolve_repo "$2")"; shift 2 ;;
+      *) die "unknown list option: $1" ;;
+    esac
+  done
+  local mf slug provider branch repo wt report
+  printf '%-22s %-7s %-28s %-8s %s\n' "SLUG" "PROV" "BRANCH" "REPORT" "REPO"
+  for mf in "$META_ROOT"/*.json; do
+    [ -f "$mf" ] || continue
+    slug="$(basename "$mf" .json)"
+    repo="$(meta_get "$slug" repo)"
+    [ -z "$filter" ] || [ "$repo" = "$filter" ] || continue
+    provider="$(meta_get "$slug" provider)"; branch="$(meta_get "$slug" branch)"
+    wt="$(meta_get "$slug" worktree)"
+    report="no"
+    [ -d "$wt" ] || report="ORPHAN"
+    [ -f "$wt/PEON_REPORT.md" ] && report="yes"
+    printf '%-22s %-7s %-28s %-8s %s\n' "$slug" "$provider" "$branch" "$report" "$repo"
+  done
+}
+
+cmd_report() {
+  local slug="${1:-}"; [ -n "$slug" ] || die "usage: peon report <slug>"
+  local wt base_sha
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  base_sha="$(meta_get "$slug" base_sha)"
+  echo "== peon: $slug ($(meta_get "$slug" provider)) =="
+  echo "task: $(meta_get "$slug" task)"
+  echo
+  if [ -f "$wt/PEON_REPORT.md" ]; then
+    cat "$wt/PEON_REPORT.md"
+  else
+    echo "(no PEON_REPORT.md yet — peon may have failed or still be running)"
+  fi
+  echo
+  echo "== commits =="
+  git -C "$wt" log --oneline "$base_sha..HEAD"
+  echo
+  echo "== diffstat vs base =="
+  git -C "$wt" diff --stat "$base_sha" HEAD
+  if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+    echo
+    echo "== WARNING: uncommitted changes in worktree =="
+    git -C "$wt" status --short
+  fi
+}
+
+cmd_diff() {
+  local slug="${1:-}"; [ -n "$slug" ] || die "usage: peon diff <slug>"
+  local wt
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  git -C "$wt" diff "$(meta_get "$slug" base_sha)" HEAD
+}
+
 cmd="${1:-}"
 [ -n "$cmd" ] || { usage >&2; exit 1; }
 shift || true
 
 case "$cmd" in
   dispatch) cmd_dispatch "$@" ;;
-  list)     die "not implemented yet" ;;
-  report)   die "not implemented yet" ;;
-  diff)     die "not implemented yet" ;;
+  list)     cmd_list "$@" ;;
+  report)   cmd_report "$@" ;;
+  diff)     cmd_diff "$@" ;;
   poke)     die "not implemented yet" ;;
   merge)    die "not implemented yet" ;;
   scrap)    die "not implemented yet" ;;
