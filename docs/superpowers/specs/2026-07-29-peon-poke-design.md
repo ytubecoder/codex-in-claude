@@ -52,12 +52,12 @@ Skill flow:
 - **Peon prompt contract** (embedded in every dispatch): do the task; commit all changes to the current branch with clear messages; write `PEON_REPORT.md` (what changed, why, how verified, open questions) and commit it too.
 - **Metadata:** `.peon.json` in the worktree (provider, session id, task text, base ref, timestamps) so any later session or agent can resume, review, or clean up cold.
 
-## Provider mechanics to verify at implementation time
+## Provider mechanics — verified 2026-07-29 (codex-cli 0.145.0, grok 0.2.112)
 
-- Codex headless resume **by session id** (parallel-safe poke; `resume --last` is global-last and unsafe with concurrent peons).
-- Exact codex write flags (`--full-auto` vs `-s workspace-write` + approval flags) headless.
-- Grok headless write behavior: which `--permission-mode` (auto vs dontAsk) allows file edits without a TTY.
-- Grok's native `--worktree` exists but we manage worktrees ourselves for provider parity.
+- ✅ Codex headless resume by session id: `codex exec resume <SESSION_ID> "<prompt>"` accepts a UUID — parallel-safe poke. (`resume --last` remains global-last; never use it.)
+- ✅ Codex write flags: `--full-auto` does **not** exist on `codex exec` in 0.145.0. Use `-s workspace-write` (+ `-c approval_policy=never` if approvals surface), `-C <worktree>` for the working root. `-o/--output-last-message <file>` and `--json` (JSONL events, includes session id) give the harness deterministic capture of the session id at dispatch time.
+- ✅ Grok headless writes: knobs exist — `--sandbox workspace` + `--permission-mode` (`auto`/`dontAsk`) or blanket `--always-approve`; `grok agent stdio|headless` also available. Which permission mode suffices without a TTY is confirmed by live test 1 below.
+- Grok's native `--worktree`/`--worktree-ref` exist but we manage worktrees ourselves for provider parity.
 
 ## Error handling
 
