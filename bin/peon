@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# peon — dispatch implementation tasks to external CLI agents in isolated git worktrees.
+# Providers: codex, grok (and 'fake' for tests). See skills/peon-poke/SKILL.md for workflow.
+set -euo pipefail
+
+PEON_HOME="${PEON_HOME:-$HOME/.peon}"
+WT_ROOT="$PEON_HOME/worktrees"
+LOG_ROOT="$PEON_HOME/logs"
+META_ROOT="$PEON_HOME/meta"
+GROK_APPROVE="${GROK_APPROVE:-mode:auto}"
+
+die() { echo "peon: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+peon — farm implementation tasks out to external CLI agents in isolated git worktrees
+
+Usage:
+  peon dispatch <codex|grok> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
+  peon list [--repo DIR]
+  peon report <slug>
+  peon diff <slug>
+  peon poke <slug> "<feedback>"
+  peon merge <slug> [--into REF]     # --into asserts the branch already checked out; peon never switches your branch
+  peon scrap <slug>
+  peon help
+
+Peon branches are named peon/<slug>; worktrees live under $PEON_HOME/worktrees
+and metadata under $PEON_HOME/meta (default ~/.peon). Slugs are globally unique.
+Nothing reaches your working tree without 'peon merge' (which reviews demand first).
+EOF
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { usage >&2; exit 1; }
+shift || true
+
+case "$cmd" in
+  dispatch) die "not implemented yet" ;;
+  list)     die "not implemented yet" ;;
+  report)   die "not implemented yet" ;;
+  diff)     die "not implemented yet" ;;
+  poke)     die "not implemented yet" ;;
+  merge)    die "not implemented yet" ;;
+  scrap)    die "not implemented yet" ;;
+  help|-h|--help) usage ;;
+  *) die "unknown command: $cmd (try 'peon help')" ;;
+esac
