@@ -8,7 +8,10 @@ PEON_HOME="${PEON_HOME:-$HOME/.peon}"
 WT_ROOT="$PEON_HOME/worktrees"
 LOG_ROOT="$PEON_HOME/logs"
 META_ROOT="$PEON_HOME/meta"
-GROK_APPROVE="${GROK_APPROVE:-mode:auto}"
+# Default locked by live verification 2026-07-29 (grok 0.2.112): headless, only
+# --always-approve lets grok commit; mode:auto and mode:dontAsk permit file edits
+# but block the git commit shell calls, tripping the contract gate.
+GROK_APPROVE="${GROK_APPROVE:-always}"
 
 die() { echo "peon: $*" >&2; exit 1; }
 

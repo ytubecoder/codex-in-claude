@@ -1,6 +1,6 @@
 # peon-poke — design spec (2026-07-29)
 
-**Status:** approved 2026-07-29 (in conversation). Council-reviewed (Codex + Grok, 2 rounds) — agreed amendments are reflected in the implementation plan (`docs/superpowers/plans/2026-07-29-peon-poke.md`, revision 2) and in the deviations noted below. Implementation in progress.
+**Status:** shipped 2026-07-29. Council-reviewed plan (Codex + Grok, 2 rounds), implemented via parallel agent streams, final whole-branch review + fix wave (2 criticals caught: detached-HEAD merge data-loss paths), 104 deterministic tests, live-verified per the testing plan below (all 4 tests). **Locked live findings:** grok headless commits require `--always-approve` (`GROK_APPROVE=always`, now the default — `mode:auto`/`mode:dontAsk` permit file edits but block git commits, tripping the contract gate); codex `exec resume <id> … - < promptfile` stdin form confirmed working; codex session id extraction from `--json` JSONL confirmed against production output.
 
 ## Purpose
 

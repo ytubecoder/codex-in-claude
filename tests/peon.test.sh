@@ -205,7 +205,7 @@ t  "codex approval never"          sh -c "grep -q 'approval_policy=never' '$CMD'
 t  "grok dry dispatch ok"          "$PEON" dispatch grok "real task" --repo "$R" --slug grk
 GCMD="$PEON_HOME/logs/grk.cmd"
 t  "grok sandbox workspace"        sh -c "grep -q -- '--sandbox workspace' '$GCMD'"
-t  "grok default approve mode"     sh -c "grep -q -- '--permission-mode auto' '$GCMD'"
+t  "grok default approve mode"     sh -c "grep -q -- '--always-approve' '$GCMD'"
 t  "grok pinned session"           sh -c "grep -qE -- '-s [0-9a-f-]{36}' '$GCMD'"
 t  "grok prompt file"              sh -c "grep -q -- '--prompt-file' '$GCMD'"
 t  "codex poke dry ok"             "$PEON" poke cdx "revise"
@@ -215,8 +215,8 @@ t  "resume line has no -s flag"    sh -c "! grep -E -q 'resume .* -s ' '$CMD'"
 t  "no --last anywhere"            sh -c "! grep -q -- '--last' '$CMD'"
 t  "grok poke dry ok"              "$PEON" poke grk "revise"
 t  "grok resume by session id"     sh -c "grep -q -- '--resume dry-run' '$GCMD'"
-GA="$(GROK_APPROVE=always "$PEON" dispatch grok "x" --repo "$R" --slug grka >/dev/null 2>&1; grep -c -- '--always-approve' "$PEON_HOME/logs/grka.cmd")"
-t  "GROK_APPROVE=always maps flag" test "$GA" -ge 1
+GA="$(GROK_APPROVE=mode:auto "$PEON" dispatch grok "x" --repo "$R" --slug grka >/dev/null 2>&1; grep -c -- '--permission-mode auto' "$PEON_HOME/logs/grka.cmd")"
+t  "GROK_APPROVE=mode:auto maps flag" test "$GA" -ge 1
 
 # I1/M10: invalid GROK_APPROVE must fail closed (not silently dispatch with no approve flag)
 tf "invalid GROK_APPROVE fails closed" env GROK_APPROVE=bogus "$PEON" dispatch grok "x" --repo "$R" --slug ga1
