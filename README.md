@@ -10,10 +10,10 @@
                 opinions in                              labor out
              ◀───────────────                        ───────────────▶
 
-   ┌──────────────┐               ╔═════════════╗               ┌──────────────┐
+   ┌──────────────┐                ╔═════════════╗               ┌──────────────┐
    │  reviewers   │ ◀─── plan ─── ║   CLAUDE    ║ ─── task ───▶ │    peons     │
    │ codex · grok │ ─ findings ─▶ ║  (foreman)  ║ ◀── report ── │ codex · grok │
-   └──────────────┘               ╚═════════════╝               └──────────────┘
+   └──────────────┘                ╚═════════════╝               └──────────────┘
      read-only sandboxes        mediates · reviews          isolated worktrees
         /plan-check                  merges                 /peon-poke  "zug zug"
 ```
