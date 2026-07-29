@@ -94,5 +94,69 @@ tf "no-op poke trips gate"         env PEON_FAKE_NOOP=1 "$PEON" poke widget "do 
 tf "poke unknown slug fails"       "$PEON" poke nosuchpeon "feedback"
 tf "poke without feedback fails"   "$PEON" poke widget
 
+# --- Task 5: merge / scrap / failure paths / parallel ---
+fresh_home
+R="$(mkrepo)"
+"$PEON" dispatch fake "mergeable work" --repo "$R" --slug landme >/dev/null 2>&1
+WT="$PEON_HOME/worktrees/$(basename "$R")-landme"
+t  "merge succeeds"                "$PEON" merge landme
+t  "work landed on main"           test -f "$R/FAKE_WORK-landme.txt"
+t  "report NOT landed"             sh -c "test ! -f '$R/PEON_REPORT.md'"
+t  "merge commit exists"           sh -c "git -C '$R' log --oneline -1 | grep -q 'merge peon/landme'"
+t  "worktree removed"              sh -c "test ! -d '$WT'"
+t  "branch removed"                sh -c "! git -C '$R' show-ref --verify --quiet refs/heads/peon/landme"
+t  "meta removed"                  sh -c "test ! -f '$PEON_HOME/meta/landme.json'"
+t  "repo clean after merge"        test -z "$(git -C "$R" status --porcelain)"
+
+# conflict: peon and main both edit README.md
+R2="$(mkrepo)"
+"$PEON" dispatch fake "conflict me" --repo "$R2" --slug clash >/dev/null 2>&1
+WT2="$PEON_HOME/worktrees/$(basename "$R2")-clash"
+( cd "$WT2" && echo "peon side" > README.md && git add README.md && git commit -qm "fake: conflict edit" )
+( cd "$R2" && echo "main side" > README.md && git add README.md && git commit -qm "main edit" )
+tf "conflicting merge refused"     "$PEON" merge clash
+t  "repo clean after aborted merge" test -z "$(git -C "$R2" status --porcelain)"
+t  "worktree intact after abort"   test -d "$WT2"
+tf "merge --into wrong branch"     "$PEON" merge clash --into not-checked-out-branch
+t  "scrap succeeds"                "$PEON" scrap clash
+t  "scrap removed worktree"        sh -c "test ! -d '$WT2'"
+t  "scrap removed branch"          sh -c "! git -C '$R2' show-ref --verify --quiet refs/heads/peon/clash"
+t  "scrap removed meta"            sh -c "test ! -f '$PEON_HOME/meta/clash.json'"
+
+# dirty peon worktree: merge refuses, scrap proceeds
+R5="$(mkrepo)"
+"$PEON" dispatch fake "dirty merge" --repo "$R5" --slug dm >/dev/null 2>&1
+WT5="$PEON_HOME/worktrees/$(basename "$R5")-dm"
+echo "wip" > "$WT5/UNCOMMITTED.txt"
+tf "merge refuses dirty worktree"  "$PEON" merge dm
+t  "scrap discards dirty worktree" "$PEON" scrap dm
+
+# mid-task provider death: residue preserved, then scrap cleans
+R4="$(mkrepo)"
+tf "failed dispatch exits nonzero" env PEON_FAKE_FAIL=1 "$PEON" dispatch fake "doomed" --repo "$R4" --slug doomed
+WT4="$PEON_HOME/worktrees/$(basename "$R4")-doomed"
+t  "worktree preserved"            test -d "$WT4"
+t  "meta preserved"                test -f "$PEON_HOME/meta/doomed.json"
+t  "report handles missing report" sh -c "'$PEON' report doomed | grep -qi 'no PEON_REPORT'"
+tf "poke refuses empty session"    "$PEON" poke doomed "fix it"
+t  "scrap cleans failed peon"      "$PEON" scrap doomed
+t  "failed peon meta removed"      sh -c "test ! -f '$PEON_HOME/meta/doomed.json'"
+
+# global slug uniqueness across repos
+RA="$(mkrepo)"; RB="$(mkrepo)"
+t  "slug in repo A"                "$PEON" dispatch fake "a" --repo "$RA" --slug shared
+tf "same slug refused in repo B"   "$PEON" dispatch fake "b" --repo "$RB" --slug shared
+
+# parallel: two fake peons on one repo, no interference
+R3="$(mkrepo)"
+"$PEON" dispatch fake "task one" --repo "$R3" --slug p1 >/dev/null 2>&1 &
+"$PEON" dispatch fake "task two" --repo "$R3" --slug p2 >/dev/null 2>&1 &
+wait
+t  "parallel peon 1 exists"        test -f "$PEON_HOME/worktrees/$(basename "$R3")-p1/PEON_REPORT.md"
+t  "parallel peon 2 exists"        test -f "$PEON_HOME/worktrees/$(basename "$R3")-p2/PEON_REPORT.md"
+t  "parallel merge 1"              "$PEON" merge p1
+t  "parallel merge 2"              "$PEON" merge p2
+t  "both tasks landed"             sh -c "grep -q 'task one' '$R3/FAKE_WORK-p1.txt' && grep -q 'task two' '$R3/FAKE_WORK-p2.txt'"
+
 echo; echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -309,6 +309,68 @@ cmd_poke() {
   echo "poked $slug — review with: peon report $slug"
 }
 
+cleanup_peon() {
+  local repo="$1" wt="$2" slug="$3" delflag="$4"
+  git -C "$repo" worktree remove --force "$wt" 2>/dev/null \
+    || { rm -rf "$wt"; git -C "$repo" worktree prune 2>/dev/null || true; }
+  git -C "$repo" branch "$delflag" "peon/$slug" 2>/dev/null || true
+  rm -f "$META_ROOT/$slug.json" "$LOG_ROOT/$slug".*      # meta ALWAYS goes — a slug must never stay reserved
+}
+
+cmd_merge() {
+  local slug="${1:-}" into=""
+  [ -n "$slug" ] || die "usage: peon merge <slug> [--into REF]"
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --into) [ -n "${2:-}" ] || die "--into needs a value"; into="$2"; shift 2 ;;
+      *) die "unknown merge option: $1" ;;
+    esac
+  done
+  local wt repo branch task current pre_head
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  repo="$(meta_get "$slug" repo)"
+  branch="$(meta_get "$slug" branch)"
+  task="$(meta_get "$slug" task)"
+  [ -z "$(git -C "$wt" status --porcelain)" ] \
+    || die "peon worktree has uncommitted changes — 'peon poke $slug' to have them committed, or 'peon scrap $slug' to discard"
+  require_clean "$repo" "merge target $repo"
+  if [ -n "$into" ]; then
+    current="$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
+    [ "$current" = "$into" ] || die "--into $into but $current is checked out — check out $into yourself first (peon never switches your branch)"
+  fi
+  pre_head="$(git -C "$repo" rev-parse HEAD)"
+  if ! git -C "$repo" merge --no-ff --no-commit "$branch" >/dev/null 2>&1; then
+    git -C "$repo" merge --abort 2>/dev/null || true
+    die "merge of $branch does not apply cleanly — resolve manually or 'peon poke $slug' to have it rebase/fix"
+  fi
+  if git -C "$repo" diff --cached --quiet; then
+    git -C "$repo" merge --abort 2>/dev/null || true
+    git -C "$repo" reset -q --hard "$pre_head"
+    die "nothing to merge from $branch (already up to date?)"
+  fi
+  if ! git -C "$repo" cat-file -e "$pre_head:PEON_REPORT.md" 2>/dev/null; then
+    git -C "$repo" rm -qf PEON_REPORT.md 2>/dev/null || true   # review artifact, not product code
+  fi
+  git -C "$repo" commit -qm "merge peon/$slug: $(printf '%.60s' "$task")"
+  cleanup_peon "$repo" "$wt" "$slug" -d
+  echo "merged $branch into $(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo HEAD) and cleaned up"
+}
+
+cmd_scrap() {
+  local slug="${1:-}"
+  [ -n "$slug" ] || die "usage: peon scrap <slug>"
+  local wt repo
+  wt="$(find_wt "$slug")"
+  repo="$(meta_get "$slug" repo)"
+  if [ -d "$wt" ] && [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+    echo "peon: warning: discarding uncommitted changes in $wt" >&2
+  fi
+  cleanup_peon "$repo" "$wt" "$slug" -D
+  echo "scrapped $slug (worktree, branch, and metadata removed; work discarded)"
+}
+
 cmd="${1:-}"
 [ -n "$cmd" ] || { usage >&2; exit 1; }
 shift || true
@@ -319,8 +381,8 @@ case "$cmd" in
   report)   cmd_report "$@" ;;
   diff)     cmd_diff "$@" ;;
   poke)     cmd_poke "$@" ;;
-  merge)    die "not implemented yet" ;;
-  scrap)    die "not implemented yet" ;;
+  merge)    cmd_merge "$@" ;;
+  scrap)    cmd_scrap "$@" ;;
   help|-h|--help) usage ;;
   *) die "unknown command: $cmd (try 'peon help')" ;;
 esac
