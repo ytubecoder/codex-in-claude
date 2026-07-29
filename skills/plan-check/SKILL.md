@@ -1,12 +1,12 @@
 ---
 name: plan-check
-description: "Iterative plan review with Codex, Grok, or both (council). Trigger phrases: 'get codex to check', 'codex review', 'grok review', 'what does grok think', 'ask both', 'council review', 'second opinion on this plan'. Claude mediates — agrees, pushes back, or negotiates across multiple rounds."
+description: "Iterative plan review with Codex, Grok, Gemini, or all (council). Trigger phrases: 'get codex to check', 'codex review', 'grok review', 'gemini review', 'what does grok/gemini think', 'ask both', 'ask all three', 'council review', 'second opinion on this plan'. Claude mediates — agrees, pushes back, or negotiates across multiple rounds."
 user_invocable: true
 ---
 
-# Plan Check — Iterative Plan Review (Codex / Grok / Council)
+# Plan Check — Iterative Plan Review (Codex / Grok / Gemini / Council)
 
-Conversational plan review where Claude acts as mediator. An external reviewer (Codex, Grok, or both in parallel) reviews the plan for general completeness, risks, sequencing, and feasibility. Claude synthesizes the feedback, agrees or pushes back, and iterates until the plan is solid.
+Conversational plan review where Claude acts as mediator. An external reviewer (Codex, Grok, Gemini, or several in parallel) reviews the plan for general completeness, risks, sequencing, and feasibility. Claude synthesizes the feedback, agrees or pushes back, and iterates until the plan is solid.
 
 ## Reviewers
 
@@ -14,19 +14,20 @@ Conversational plan review where Claude acts as mediator. An external reviewer (
 |---|---|---|
 | **Codex** (default) | `codex` | "codex review", "send to codex", nothing provider-specific |
 | **Grok** | `grok` | "grok review", "send to grok", "what does grok think" |
-| **Council** (all in parallel) | both | "ask both", "council review", "get codex and grok to check", "all reviewers" |
+| **Gemini** | `gemini` | "gemini review", "send to gemini", "what does gemini think" |
+| **Council** (all in parallel) | all installed | "ask both", "ask all three", "council review", "all reviewers" |
 
-If the requested CLI is not installed (`command -v codex` / `command -v grok`), say so and offer the other reviewer.
+If a requested CLI is not installed (`command -v codex` / `command -v grok` / `command -v gemini`), say so and offer the others. Council means every installed reviewer unless the user names a subset ("codex and gemini").
 
 ## Trigger Phrases
 
-- "get codex to check" / "get grok to check"
-- "lets review with codex" / "lets review with grok"
-- "send to codex" / "send to grok"
-- "codex review" / "grok review"
-- "have codex look at this" / "what does grok think"
+- "get codex to check" / "get grok to check" / "get gemini to check"
+- "lets review with codex" / "lets review with grok" / "lets review with gemini"
+- "send to codex" / "send to grok" / "send to gemini"
+- "codex review" / "grok review" / "gemini review"
+- "have codex look at this" / "what does grok think" / "what does gemini think"
 - "second opinion on this plan"
-- "ask both" / "council review" / "third opinion"
+- "ask both" / "ask all three" / "council review" / "third opinion"
 
 ## Invocation
 
@@ -34,6 +35,7 @@ If the requested CLI is not installed (`command -v codex` / `command -v grok`), 
 |---|---|
 | `/plan-check` | Auto-detect plan files, review with Codex |
 | `/plan-check grok` | Review with Grok |
+| `/plan-check gemini` | Review with Gemini |
 | `/plan-check council` | Review with all reviewers in parallel |
 | `/plan-check path/to/plan.md` | Review specific file(s) |
 | `/plan-check 3` | Run 3 rounds of review |
@@ -109,6 +111,18 @@ grok -s "$GROK_SESSION" --sandbox read-only --prompt-file "$PROMPT_FILE"
 
 Keep `$GROK_SESSION` for the whole review — rounds 2+ resume it.
 
+### Gemini call
+
+```bash
+GEMINI_DIR=$(mktemp -d -t plan-check-gemini)
+cat > "$PROMPT_FILE" <<'PROMPT_EOF'
+$REVIEW_PROMPT
+PROMPT_EOF
+( cd "$GEMINI_DIR" && gemini --approval-mode plan -p "$(cat "$PROMPT_FILE")" )
+```
+
+`--approval-mode plan` is Gemini's read-only mode. Gemini stores sessions per-directory and resumes by recency, not by id — the dedicated `$GEMINI_DIR` guarantees `--resume latest` in rounds 2+ refers to this review and not some other gemini session. Keep `$GEMINI_DIR` for the whole review.
+
 ### Council: run reviewers in parallel
 
 Reviewers are independent processes — launch them concurrently (background both and `wait`, or parallel tool calls). Wall time is the slowest reviewer, not the sum. Send each reviewer the **identical** review prompt. Never include one reviewer's output in another's round-1 prompt — independent takes are the whole point.
@@ -119,6 +133,7 @@ $REVIEW_PROMPT
 PROMPT_EOF
 } &
 grok -s "$GROK_SESSION" --sandbox read-only --prompt-file "$PROMPT_FILE" > "$WORKDIR/grok-review.md" 2>&1 &
+( cd "$GEMINI_DIR" && gemini --approval-mode plan -p "$(cat "$PROMPT_FILE")" ) > "$WORKDIR/gemini-review.md" 2>&1 &
 wait
 ```
 
@@ -150,7 +165,7 @@ Present a unified summary:
 - [finding] — [why Claude disagrees]
 ```
 
-**Council merge:** dedupe findings across reviewers first, attributing each — *Both*, *Codex only*, *Grok only*. Consensus findings carry extra weight; single-reviewer findings get extra scrutiny (they are often the most valuable catches, but also where hallucinated concerns live). Then apply the same agree / partially / disagree triage to the merged list, one consolidated summary — not one summary per reviewer.
+**Council merge:** dedupe findings across reviewers first, attributing each — *All*, *Codex+Gemini*, *Grok only*, etc. Consensus findings carry extra weight; single-reviewer findings get extra scrutiny (they are often the most valuable catches, but also where hallucinated concerns live). Then apply the same agree / partially / disagree triage to the merged list, one consolidated summary — not one summary per reviewer.
 
 ## Step 5: Subsequent Rounds — Negotiate
 
@@ -182,6 +197,17 @@ grok --resume "$GROK_SESSION" --sandbox read-only --prompt-file "$PROMPT_FILE"
 ```
 
 If `$GROK_SESSION` was lost (fresh shell), fall back to `grok --continue`, which resumes the most recent session for the current directory.
+
+### Gemini follow-up
+
+```bash
+cat > "$PROMPT_FILE" <<'PROMPT_EOF'
+$FOLLOW_UP_PROMPT
+PROMPT_EOF
+( cd "$GEMINI_DIR" && gemini --resume latest --approval-mode plan -p "$(cat "$PROMPT_FILE")" )
+```
+
+If `$GEMINI_DIR` was lost (fresh shell), there is no reliable resume — start a fresh session in a new temp dir and restate the agreed/contested items in the prompt.
 
 **Council cross-examination (escalation only):** reviewers never talk to each other directly. But when they directly contradict each other on a specific point, Claude may relay the substance of one reviewer's argument into the other's follow-up prompt ("another reviewer argues X because Y — does that change your position?") and let each respond in its own session. Use this only for genuine conflicts, not for consensus items.
 

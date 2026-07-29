@@ -1,6 +1,6 @@
 # codex-in-claude
 
-Two Claude Code skills backed by external CLI agents (Codex, Grok), plus the `bin/peon` script:
+Two Claude Code skills backed by external CLI agents (Codex, Grok, Gemini), plus the `bin/peon` script:
 
 - `skills/plan-check/SKILL.md` — mediated plan review (opinions in). Read-only reviewers.
 - `skills/peon-poke/SKILL.md` — farm implementation work out to worktree-isolated peons (labor out). `bin/peon` is the deterministic interface; the skill teaches workflow only.
@@ -12,6 +12,7 @@ This repo is the source of truth. Installed copies on this machine live in `~/.c
 - Plan content travels inside the prompt — reviewers work without repo access, read-only sandboxes.
 - The skill never edits plan files.
 - `codex exec resume` has NO `-s` flag — sandbox for resumed sessions goes via `-c sandbox_mode=...` (broke live 2026-07-29 on codex-cli 0.145.0).
+- Gemini reviews run `--approval-mode plan` (read-only policy mode) from a dedicated `mktemp -d` dir: gemini sessions are per-directory and resumed by recency only, so the private dir is what makes `--resume latest` unambiguous across rounds.
 
 ## Invariants — peon-poke
 - Hub-and-spoke: all work products return to the orchestrator; peons never share state.
@@ -20,6 +21,8 @@ This repo is the source of truth. Installed copies on this machine live in `~/.c
 - Contract gates after every provider run: commits since gate ref (dispatch: base; poke: pre-poke HEAD) + committed PEON_REPORT.md + clean worktree. Violations fail loudly and preserve the worktree.
 - `bin/peon` is the only interface — skills and agents never hand-roll worktree or provider incantations. bash-3.2-compatible; deps: git, python3, uuidgen. Never jq, never `codex exec resume --last`.
 - Grok headless can only COMMIT with `--always-approve` (`GROK_APPROVE=always`, the live-locked default); `--permission-mode auto`/`dontAsk` permit file edits but block git-commit shell calls — the peon then trips the contract gate having "succeeded".
+- Gemini peons run `--approval-mode yolo` with NO `-s`/`--sandbox`: a linked worktree's git dir lives under the main repo's `.git/worktrees/`, outside gemini's seatbelt project boundary, so a sandboxed peon could edit but never commit (grok-approve-class trap). Containment is the worktree + review. ⚠ PREDICTED from flag semantics 2026-07-30 (gemini-cli 0.38.2) — pending live lock.
+- Gemini has no id-addressed resume: per-directory session store, poke runs `--resume latest` from the worktree cwd. Invariant: nothing but the harness ever runs gemini inside a peon worktree.
 - `merge` strips `PEON_REPORT.md` only when the merge target didn't already track it (review artifact, not product code).
 - Tests: `bash tests/peon.test.sh` (fake provider + dry-run, deterministic, no provider CLIs needed). Run after any `bin/peon` change.
 

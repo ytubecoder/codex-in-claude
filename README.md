@@ -1,26 +1,27 @@
-# codex-and-grok-in-claude (now with peons)
+# codex-and-grok-in-claude (now with gemini and peons)
 
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![Works with Claude Code](https://img.shields.io/badge/works%20with-Claude%20Code-blueviolet)
 ![Puts to work: Codex CLI](https://img.shields.io/badge/puts%20to%20work-Codex%20CLI-orange)
 ![Puts to work: Grok CLI](https://img.shields.io/badge/puts%20to%20work-Grok%20CLI-black)
+![Puts to work: Gemini CLI](https://img.shields.io/badge/puts%20to%20work-Gemini%20CLI-blue)
 ![deps: bash + git + python3](https://img.shields.io/badge/deps-bash%203.2%2B%20·%20git%20·%20python3-lightgrey)
 
 ```
                 opinions in                              labor out
              ◀───────────────                        ───────────────▶
 
-   ┌──────────────┐                ╔═════════════╗               ┌──────────────┐
-   │  reviewers   │ ◀─── plan ─── ║   CLAUDE    ║ ─── task ───▶ │    peons     │
-   │ codex · grok │ ─ findings ─▶ ║  (foreman)  ║ ◀── report ── │ codex · grok │
-   └──────────────┘                ╚═════════════╝               └──────────────┘
-     read-only sandboxes        mediates · reviews          isolated worktrees
-        /plan-check                  merges                 /peon-poke  "zug zug"
+ ┌───────────────────┐                ╔═════════════╗               ┌───────────────────┐
+ │     reviewers     │ ◀─── plan ─── ║   CLAUDE    ║ ─── task ───▶ │       peons       │
+ │ codex grok gemini │ ─ findings ─▶ ║  (foreman)  ║ ◀── report ── │ codex grok gemini │
+ └───────────────────┘                ╚═════════════╝               └───────────────────┘
+    read-only sandboxes            mediates · reviews             isolated worktrees
+       /plan-check                      merges                    /peon-poke  "zug zug"
 ```
 
 > Opinions in. Labor out. Nothing lands without the foreman's review.
 
-Two Claude Code skills that put external CLI agents (Codex, Grok) to work *for* Claude instead of alongside it:
+Two Claude Code skills that put external CLI agents (Codex, Grok, Gemini) to work *for* Claude instead of alongside it:
 
 - **`/plan-check`** pulls **opinions in** — second-opinion plan review, solo or as a parallel "council", with Claude mediating every round.
 - **`/peon-poke`** pushes **labor out** — implementation chores farmed to a "peon" in an isolated git worktree, reviewed and merged by Claude.
@@ -63,12 +64,13 @@ When you've written a plan (design doc, spec, architecture note) and want anothe
    parallel                        narrow          stalemates
 ```
 
-Default is 2 rounds. **Council mode** sends the identical prompt to all reviewers in parallel and merges their findings with attribution (*Both* / *Codex only* / *Grok only*). Reviewers never see each other's round-1 output — independent takes are the point. Consensus findings carry extra weight; single-reviewer findings get extra scrutiny.
+Default is 2 rounds. **Council mode** sends the identical prompt to all reviewers in parallel and merges their findings with attribution (*All* / *Codex+Gemini* / *Grok only* / …). Reviewers never see each other's round-1 output — independent takes are the point. Consensus findings carry extra weight; single-reviewer findings get extra scrutiny.
 
 | Invocation | Behavior |
 |---|---|
 | `/plan-check` | Auto-detects plan files, reviews with Codex |
 | `/plan-check grok` | Reviews with Grok |
+| `/plan-check gemini` | Reviews with Gemini |
 | `/plan-check council` | Reviews with all reviewers in parallel |
 | `/plan-check path/to/plan.md` | Reviews a specific file |
 | `/plan-check 3` | Runs 3 rounds instead of the default 2 |
@@ -102,7 +104,7 @@ Give Claude an implementation chore to delegate ("have codex build the paginatio
 The mechanics live in `bin/peon` — a dependency-light shell script (git + python3 + uuidgen) any orchestrator can call, not just Claude:
 
 ```
-peon dispatch <codex|grok> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
+peon dispatch <codex|grok|gemini> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
 peon list | report <slug> | diff <slug>
 peon poke <slug> "<feedback>"
 peon merge <slug> | scrap <slug>
@@ -116,6 +118,7 @@ State lives under `~/.peon/` by default (worktrees, logs, metadata), overridable
 - At least one provider CLI, installed, authenticated, and on `PATH`:
   - [Codex CLI](https://github.com/openai/codex) (`codex`)
   - [Grok Build CLI](https://docs.x.ai/) (`grok`)
+  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`) — sign in with a Google account; Google AI Pro/Ultra subscriptions include 1,500–2,000 requests/day, so peon labor can ride credits you may already pay for
 - For peon-poke: `git`, `python3`, `uuidgen` (all standard on macOS/Linux)
 
 ## Tests

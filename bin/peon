@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # peon — dispatch implementation tasks to external CLI agents in isolated git worktrees.
-# Providers: codex, grok (and 'fake' for tests). See skills/peon-poke/SKILL.md for workflow.
+# Providers: codex, grok, gemini (and 'fake' for tests). See skills/peon-poke/SKILL.md for workflow.
 set -euo pipefail
 umask 077   # prompts and transcripts under ~/.peon can contain task/model content — keep them private
 
@@ -20,7 +20,7 @@ usage() {
 peon — farm implementation tasks out to external CLI agents in isolated git worktrees
 
 Usage:
-  peon dispatch <codex|grok> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
+  peon dispatch <codex|grok|gemini> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
   peon list [--repo DIR]
   peon report <slug>
   peon diff <slug>
@@ -150,13 +150,13 @@ cmd_dispatch() {
       *) die "unknown dispatch option: $1" ;;
     esac
   done
-  [ -n "$provider" ] || die "usage: peon dispatch <codex|grok> \"<task>\" [--repo DIR] [--base REF] [--slug NAME] [--force]"
+  [ -n "$provider" ] || die "usage: peon dispatch <codex|grok|gemini> \"<task>\" [--repo DIR] [--base REF] [--slug NAME] [--force]"
   [ -n "$task" ] || die "no task given"
   case "$provider" in
-    codex|grok)
+    codex|grok|gemini)
       [ "${PEON_DRY_RUN:-0}" = "1" ] || command -v "$provider" >/dev/null 2>&1 || die "$provider CLI not installed" ;;
     fake) : ;;  # test-only provider
-    *) die "unknown provider: $provider (codex|grok)" ;;
+    *) die "unknown provider: $provider (codex|grok|gemini)" ;;
   esac
   command -v python3 >/dev/null 2>&1 || die "python3 required"
   [ "$provider" = "grok" ] && { command -v uuidgen >/dev/null 2>&1 || die "uuidgen required for grok"; }
@@ -189,9 +189,10 @@ cmd_dispatch() {
 
   SESSION=""
   case "$provider" in
-    fake)  run_fake "$slug" "$wt" "$pf" ;;
-    codex) run_codex "$slug" "$wt" "$pf" ;;
-    grok)  run_grok "$slug" "$wt" "$pf" ;;
+    fake)   run_fake "$slug" "$wt" "$pf" ;;
+    codex)  run_codex "$slug" "$wt" "$pf" ;;
+    grok)   run_grok "$slug" "$wt" "$pf" ;;
+    gemini) run_gemini "$slug" "$wt" "$pf" ;;
   esac
   require_peon_contract "$wt" "$base_sha"
   update_meta_session "$slug" "$SESSION"
@@ -323,9 +324,10 @@ cmd_poke() {
   poke_prompt > "$pf"
   pre="$(git -C "$wt" rev-parse HEAD)"                   # gate ref: the tip BEFORE this poke
   case "$provider" in
-    fake)  run_fake_resume "$slug" "$wt" "$pf" ;;
-    codex) run_codex_resume "$slug" "$wt" "$pf" "$session" ;;
-    grok)  run_grok_resume "$slug" "$wt" "$pf" "$session" ;;
+    fake)   run_fake_resume "$slug" "$wt" "$pf" ;;
+    codex)  run_codex_resume "$slug" "$wt" "$pf" "$session" ;;
+    grok)   run_grok_resume "$slug" "$wt" "$pf" "$session" ;;
+    gemini) run_gemini_resume "$slug" "$wt" "$pf" "$session" ;;
     *) die "unknown provider in metadata: $provider" ;;
   esac
   require_peon_contract "$wt" "$pre"
@@ -494,6 +496,34 @@ run_grok_resume() {
   fi
   ( cd "$wt" && grok --resume "$session" --sandbox workspace $approve_args --prompt-file "$pf" ) \
     >> "$log" 2>&1 || die "grok resume failed — see $log"
+  SESSION="$session"
+}
+
+# Gemini has no id-addressed resume: sessions are stored per-directory and resumed by
+# recency ("latest"). The worktree is the session scope — only the harness ever runs
+# gemini inside it, so "latest" is deterministic. No -s/--sandbox: a linked worktree's
+# git dir lives under the main repo's .git/worktrees/, outside gemini's seatbelt
+# project boundary, so a sandboxed peon could edit but not commit (grok-approve-class
+# trap). --approval-mode yolo is required for headless commits.
+run_gemini() {
+  local slug="$1" wt="$2" pf="$3" log="$LOG_ROOT/$slug.gemini.log"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "gemini --approval-mode yolo -p \"\$(cat $pf)\""
+    return
+  fi
+  ( cd "$wt" && gemini --approval-mode yolo -p "$(cat "$pf")" ) \
+    > "$log" 2>&1 || die "gemini failed — see $log"
+  SESSION="latest"
+}
+
+run_gemini_resume() {
+  local slug="$1" wt="$2" pf="$3" session="$4" log="$LOG_ROOT/$slug.gemini.log"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "gemini --resume latest --approval-mode yolo -p \"\$(cat $pf)\""
+    return
+  fi
+  ( cd "$wt" && gemini --resume latest --approval-mode yolo -p "$(cat "$pf")" ) \
+    >> "$log" 2>&1 || die "gemini resume failed — see $log"
   SESSION="$session"
 }
 

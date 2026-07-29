@@ -1,6 +1,6 @@
 ---
 name: peon-poke
-description: "Farm implementation work out to external CLI agents (Codex, Grok) in isolated git worktrees, then review and merge. Trigger phrases: 'peon-poke', 'dispatch a peon', 'farm this out', 'send this task to codex/grok', 'have codex build', 'get grok to implement', 'poke the peon'. Claude is the foreman: dispatches, reviews, pokes with feedback, merges."
+description: "Farm implementation work out to external CLI agents (Codex, Grok, Gemini) in isolated git worktrees, then review and merge. Trigger phrases: 'peon-poke', 'dispatch a peon', 'farm this out', 'send this task to codex/grok/gemini', 'have codex build', 'get grok to implement', 'gemini can build this', 'poke the peon'. Claude is the foreman: dispatches, reviews, pokes with feedback, merges."
 user_invocable: true
 ---
 
@@ -14,7 +14,7 @@ All mechanics live in the `peon` script — never hand-roll worktrees or provide
 
 | Command | Does |
 |---|---|
-| `peon dispatch <codex\|grok> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]` | Create worktree + `peon/<slug>` branch, run the provider inside it. Synchronous — background it to keep working. Fails loudly if the peon breaks contract (no commits / no report / dirty tree), preserving the worktree for inspection. |
+| `peon dispatch <codex\|grok\|gemini> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]` | Create worktree + `peon/<slug>` branch, run the provider inside it. Synchronous — background it to keep working. Fails loudly if the peon breaks contract (no commits / no report / dirty tree), preserving the worktree for inspection. |
 | `peon list [--repo DIR]` | Active peons, report status, orphan detection |
 | `peon report <slug>` | PEON_REPORT.md + commits + diffstat vs base (+ dirty-tree warning) |
 | `peon diff <slug>` | Full diff vs base |
@@ -22,7 +22,7 @@ All mechanics live in the `peon` script — never hand-roll worktrees or provide
 | `peon merge <slug> [--into BRANCH]` | After review: merge, strip the report, clean up. `--into` only asserts BRANCH is already checked out — peon never switches your branch. |
 | `peon scrap <slug>` | Discard the work, remove worktree + branch + metadata |
 
-Slugs are globally unique across repos. Grok approval strategy is `GROK_APPROVE` (`mode:<m>` or `always`). State (worktrees, logs, metadata) lives under `~/.peon/` by default, overridable via `PEON_HOME`.
+Slugs are globally unique across repos. Grok approval strategy is `GROK_APPROVE` (`mode:<m>` or `always`). Gemini peons run `--approval-mode yolo` (required for headless commits) and resume as `--resume latest` scoped to the worktree — never run your own gemini session inside a peon worktree, or the poke will resume the wrong session. State (worktrees, logs, metadata) lives under `~/.peon/` by default, overridable via `PEON_HOME`.
 
 ## Workflow
 

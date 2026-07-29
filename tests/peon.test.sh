@@ -215,6 +215,13 @@ t  "resume line has no -s flag"    sh -c "! grep -E -q 'resume .* -s ' '$CMD'"
 t  "no --last anywhere"            sh -c "! grep -q -- '--last' '$CMD'"
 t  "grok poke dry ok"              "$PEON" poke grk "revise"
 t  "grok resume by session id"     sh -c "grep -q -- '--resume dry-run' '$GCMD'"
+t  "gemini dry dispatch ok"        "$PEON" dispatch gemini "real task" --repo "$R" --slug gmn
+MCMD="$PEON_HOME/logs/gmn.cmd"
+t  "gemini yolo approval"          sh -c "grep -q -- '--approval-mode yolo' '$MCMD'"
+t  "gemini no OS sandbox flag"     sh -c "! grep -qE -- '(^| )-s |--sandbox' '$MCMD'"
+t  "gemini inline prompt"          sh -c "grep -q -- '-p ' '$MCMD'"
+t  "gemini poke dry ok"            "$PEON" poke gmn "revise"
+t  "gemini resume by latest"       sh -c "grep -q -- '--resume latest' '$MCMD'"
 GA="$(GROK_APPROVE=mode:auto "$PEON" dispatch grok "x" --repo "$R" --slug grka >/dev/null 2>&1; grep -c -- '--permission-mode auto' "$PEON_HOME/logs/grka.cmd")"
 t  "GROK_APPROVE=mode:auto maps flag" test "$GA" -ge 1
 
