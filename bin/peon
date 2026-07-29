@@ -1,0 +1,511 @@
+#!/usr/bin/env bash
+# peon — dispatch implementation tasks to external CLI agents in isolated git worktrees.
+# Providers: codex, grok (and 'fake' for tests). See skills/peon-poke/SKILL.md for workflow.
+set -euo pipefail
+umask 077   # prompts and transcripts under ~/.peon can contain task/model content — keep them private
+
+PEON_HOME="${PEON_HOME:-$HOME/.peon}"
+WT_ROOT="$PEON_HOME/worktrees"
+LOG_ROOT="$PEON_HOME/logs"
+META_ROOT="$PEON_HOME/meta"
+GROK_APPROVE="${GROK_APPROVE:-mode:auto}"
+
+die() { echo "peon: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+peon — farm implementation tasks out to external CLI agents in isolated git worktrees
+
+Usage:
+  peon dispatch <codex|grok> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
+  peon list [--repo DIR]
+  peon report <slug>
+  peon diff <slug>
+  peon poke <slug> "<feedback>"
+  peon merge <slug> [--into BRANCH]  # --into asserts the branch already checked out; peon never switches your branch
+  peon scrap <slug>
+  peon help
+
+Peon branches are named peon/<slug>; worktrees live under $PEON_HOME/worktrees
+and metadata under $PEON_HOME/meta (default ~/.peon). Slugs are globally unique.
+Nothing reaches your working tree without 'peon merge' (which reviews demand first).
+EOF
+}
+
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+    | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//' | cut -c1-30 \
+    | sed -e 's/-$//'
+}
+
+validate_slug() {
+  printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9-]{0,39}$' \
+    || die "invalid slug: '$1' (lowercase alphanumerics and hyphens, max 40 chars)"
+  git check-ref-format --branch "peon/$1" >/dev/null 2>&1 \
+    || die "slug is not a valid git branch component: $1"
+}
+
+json_str() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+
+resolve_repo() {
+  git -C "$1" rev-parse --show-toplevel 2>/dev/null || die "not a git repository: $1"
+}
+
+require_clean() {
+  local hint=""
+  [ -n "${3:-}" ] && hint=", $3"
+  [ -z "$(git -C "$1" status --porcelain)" ] || die "$2 has uncommitted changes (commit/stash first$hint)"
+}
+
+require_peon_contract() {
+  local wt="$1" since="$2"
+  [ "$(git -C "$wt" rev-list --count "$since..HEAD")" -ge 1 ] \
+    || die "peon contract violation: no commits since $since — worktree preserved at $wt ('peon report'/'peon scrap')"
+  git -C "$wt" cat-file -e "HEAD:PEON_REPORT.md" 2>/dev/null \
+    || die "peon contract violation: PEON_REPORT.md not committed — worktree preserved at $wt"
+  [ -z "$(git -C "$wt" status --porcelain)" ] \
+    || die "peon contract violation: uncommitted changes left behind — worktree preserved at $wt"
+}
+
+reserve_slug() {
+  mkdir -p "$META_ROOT"
+  ( set -C; printf '{"slug":"%s","state":"reserving"}\n' "$1" > "$META_ROOT/$1.json" ) 2>/dev/null \
+    || die "slug already in use: $1 (see 'peon list'; slugs are global)"
+}
+
+write_meta() {
+  cat > "$META_ROOT/$slug.json" <<EOF
+{
+  "slug": "$slug",
+  "provider": "$provider",
+  "session": "$session",
+  "repo": $(json_str "$repo"),
+  "worktree": $(json_str "$wt"),
+  "base_sha": "$base_sha",
+  "branch": "peon/$slug",
+  "task": $(json_str "$task"),
+  "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+}
+
+update_meta_session() {
+  python3 - "$META_ROOT/$1.json" "$2" <<'PYEOF'
+import json, os, sys
+p, sess = sys.argv[1], sys.argv[2]
+m = json.load(open(p))
+m["session"] = sess
+tmp = p + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(m, f, indent=2)
+os.replace(tmp, p)
+PYEOF
+}
+
+dispatch_prompt() {
+  cat <<EOF
+You are a "peon": an autonomous implementation agent working in an isolated git worktree on branch peon/$slug. Complete the task below, nothing more.
+
+Rules:
+- Commit ALL your changes to the current branch with clear commit messages.
+- When done, write PEON_REPORT.md at the repo root covering: what changed, why, how you verified it, open questions. Commit it too.
+- Leave the worktree clean: no uncommitted or untracked files.
+- Do not push. Do not switch branches. Do not touch files outside this worktree.
+
+Task:
+$task
+EOF
+}
+
+run_fake() {
+  local slug="$1" wt="$2" pf="$3"
+  SESSION="fake-$slug"
+  if [ "${PEON_FAKE_FAIL:-0}" = "1" ]; then
+    ( cd "$wt" && echo "half-done" > HALF_DONE.txt )   # simulates a provider dying mid-task
+    return 1
+  fi
+  ( cd "$wt" \
+    && cat "$pf" >> "FAKE_WORK-$slug.txt" \
+    && git add "FAKE_WORK-$slug.txt" && git commit -qm "fake: do task" \
+    && printf '# Peon Report\n\nDid the fake task.\n' > PEON_REPORT.md \
+    && git add PEON_REPORT.md && git commit -qm "fake: report" )
+  if [ "${PEON_FAKE_DIRTY:-0}" = "1" ]; then
+    ( cd "$wt" && echo "oops" > LEFTOVER.txt )         # trips the contract gate
+  fi
+}
+
+cmd_dispatch() {
+  local provider="" task="" repo="$PWD" base="HEAD" slug="" force=0
+  provider="${1:-}"; shift || true
+  task="${1:-}"; shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo)  [ -n "${2:-}" ] || die "--repo needs a value"; repo="$2"; shift 2 ;;
+      --base)  [ -n "${2:-}" ] || die "--base needs a value"; base="$2"; shift 2 ;;
+      --slug)  [ -n "${2:-}" ] || die "--slug needs a value"; slug="$2"; shift 2 ;;
+      --force) force=1; shift ;;
+      *) die "unknown dispatch option: $1" ;;
+    esac
+  done
+  [ -n "$provider" ] || die "usage: peon dispatch <codex|grok> \"<task>\" [--repo DIR] [--base REF] [--slug NAME] [--force]"
+  [ -n "$task" ] || die "no task given"
+  case "$provider" in
+    codex|grok)
+      [ "${PEON_DRY_RUN:-0}" = "1" ] || command -v "$provider" >/dev/null 2>&1 || die "$provider CLI not installed" ;;
+    fake) : ;;  # test-only provider
+    *) die "unknown provider: $provider (codex|grok)" ;;
+  esac
+  command -v python3 >/dev/null 2>&1 || die "python3 required"
+  [ "$provider" = "grok" ] && { command -v uuidgen >/dev/null 2>&1 || die "uuidgen required for grok"; }
+  repo="$(resolve_repo "$repo")"
+  git -C "$repo" var GIT_AUTHOR_IDENT >/dev/null 2>&1 || die "git author identity not configured in $repo (set user.name and user.email)"
+  [ "$force" -eq 1 ] || require_clean "$repo" "repo $repo" "or --force to dispatch anyway"
+  local base_sha
+  base_sha="$(git -C "$repo" rev-parse --verify "$base^{commit}" 2>/dev/null)" || die "cannot resolve base ref: $base"
+  git -C "$repo" cat-file -e "$base_sha:PEON_REPORT.md" 2>/dev/null \
+    && die "repo tracks PEON_REPORT.md at base — it would collide with the peon report artifact; rename it first"
+  [ -n "$slug" ] || slug="$(slugify "$task")"
+  [ -n "$slug" ] || die "could not derive a slug; pass --slug"
+  validate_slug "$slug"
+  local branch="peon/$slug"
+  local wt="$WT_ROOT/$(basename "$repo")-$slug"
+  git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" && die "branch $branch already exists in $repo ('peon scrap $slug' if it has metadata, otherwise 'git -C $repo branch -D $branch')"
+  [ -e "$wt" ] && die "worktree path already exists: $wt"
+  mkdir -p "$WT_ROOT" "$LOG_ROOT"
+
+  reserve_slug "$slug"                                   # atomic global reservation
+  trap 'rm -f "$META_ROOT/$slug.json"' EXIT              # release on pre-provider failure
+  git -C "$repo" worktree add -q -b "$branch" "$wt" "$base_sha" || die "git worktree add failed"
+
+  local session=""
+  write_meta                                             # full metadata before the provider runs
+  trap - EXIT                                            # from here on, failures preserve everything for inspection
+
+  local pf="$LOG_ROOT/$slug.prompt.md"
+  dispatch_prompt > "$pf"
+
+  SESSION=""
+  case "$provider" in
+    fake)  run_fake "$slug" "$wt" "$pf" ;;
+    codex) run_codex "$slug" "$wt" "$pf" ;;
+    grok)  run_grok "$slug" "$wt" "$pf" ;;
+  esac
+  require_peon_contract "$wt" "$base_sha"
+  update_meta_session "$slug" "$SESSION"
+
+  echo "peon dispatched: $slug"
+  echo "  provider: $provider  session: $SESSION"
+  echo "  worktree: $wt"
+  echo "  branch:   $branch (base $(git -C "$repo" rev-parse --short "$base_sha"))"
+  echo "review with: peon report $slug"
+}
+
+meta_get() {
+  local mf="$META_ROOT/$1.json" out rc
+  [ -f "$mf" ] || die "no peon found with slug: $1 (see 'peon list')"
+  out="$(python3 -c '
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(3)
+print(m.get(sys.argv[2], ""))
+' "$mf" "$2")" && rc=0 || rc=$?
+  [ "$rc" -eq 0 ] \
+    || die "metadata for $1 is incomplete or corrupt ($mf) — a dispatch may be in flight, or 'peon scrap $1'"
+  printf '%s\n' "$out"
+}
+
+find_wt() { meta_get "$1" worktree; }
+
+require_wt() {
+  [ -d "$1" ] || die "worktree missing for $2: $1 (orphaned — 'peon scrap $2' to clean up)"
+}
+
+cmd_list() {
+  local filter=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) [ -n "${2:-}" ] || die "--repo needs a value"; filter="$(resolve_repo "$2")"; shift 2 ;;
+      *) die "unknown list option: $1" ;;
+    esac
+  done
+  local mf slug provider branch repo wt report
+  printf '%-22s %-7s %-28s %-8s %s\n' "SLUG" "PROV" "BRANCH" "REPORT" "REPO"
+  for mf in "$META_ROOT"/*.json; do
+    [ -f "$mf" ] || continue
+    slug="$(basename "$mf" .json)"
+    if ! repo="$(meta_get "$slug" repo 2>/dev/null)"; then
+      [ -n "$filter" ] || printf '%-22s %-7s %-28s %-8s %s\n' "$slug" "..." "..." "..." "(reserving or corrupt — 'peon scrap $slug' if stuck)"
+      continue
+    fi
+    [ -z "$filter" ] || [ "$repo" = "$filter" ] || continue
+    provider="$(meta_get "$slug" provider 2>/dev/null)" || provider="..."
+    branch="$(meta_get "$slug" branch 2>/dev/null)" || branch="..."
+    wt="$(meta_get "$slug" worktree 2>/dev/null)" || wt=""
+    report="no"
+    [ -d "$wt" ] || report="ORPHAN"
+    [ -f "$wt/PEON_REPORT.md" ] && report="yes"
+    printf '%-22s %-7s %-28s %-8s %s\n' "$slug" "$provider" "$branch" "$report" "$repo"
+  done
+}
+
+cmd_report() {
+  local slug="${1:-}"; [ -n "$slug" ] || die "usage: peon report <slug>"
+  local wt base_sha
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  base_sha="$(meta_get "$slug" base_sha)"
+  echo "== peon: $slug ($(meta_get "$slug" provider)) =="
+  echo "task: $(meta_get "$slug" task)"
+  echo
+  if [ -f "$wt/PEON_REPORT.md" ]; then
+    cat "$wt/PEON_REPORT.md"
+  else
+    echo "(no PEON_REPORT.md yet — peon may have failed or still be running)"
+  fi
+  echo
+  echo "== commits =="
+  git -C "$wt" log --oneline "$base_sha..HEAD"
+  echo
+  echo "== diffstat vs base =="
+  git -C "$wt" diff --stat "$base_sha" HEAD
+  if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+    echo
+    echo "== WARNING: uncommitted changes in worktree =="
+    git -C "$wt" status --short
+  fi
+}
+
+cmd_diff() {
+  local slug="${1:-}"; [ -n "$slug" ] || die "usage: peon diff <slug>"
+  local wt
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  git -C "$wt" diff "$(meta_get "$slug" base_sha)" HEAD
+}
+
+poke_prompt() {
+  cat <<EOF
+Revision request from your reviewer on the work you already did in this worktree:
+
+$feedback
+
+Apply the requested changes and commit them to the current branch. Update PEON_REPORT.md to reflect the revision and commit that too. Same rules as before: leave the worktree clean, do not push, do not switch branches.
+EOF
+}
+
+run_fake_resume() {
+  local slug="$1" wt="$2" pf="$3"
+  [ "${PEON_FAKE_NOOP:-0}" = "1" ] && return 0          # provider "succeeds" without doing anything
+  ( cd "$wt" \
+    && cat "$pf" >> "FAKE_WORK-$slug.txt" \
+    && git add "FAKE_WORK-$slug.txt" && git commit -qm "fake: apply feedback" \
+    && printf '\nrevised per feedback.\n' >> PEON_REPORT.md \
+    && git add PEON_REPORT.md && git commit -qm "fake: update report" )
+}
+
+cmd_poke() {
+  local slug="${1:-}" feedback="${2:-}"
+  [ -n "$slug" ] || die "usage: peon poke <slug> \"<feedback>\""
+  [ -n "$feedback" ] || die "no feedback given"
+  local wt provider session pf pre
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  provider="$(meta_get "$slug" provider)"
+  session="$(meta_get "$slug" session)"
+  [ -n "$session" ] || die "no session recorded for $slug (dispatch failed before completing) — 'peon scrap $slug' and re-dispatch"
+  pf="$LOG_ROOT/$slug.poke.md"
+  mkdir -p "$LOG_ROOT"
+  poke_prompt > "$pf"
+  pre="$(git -C "$wt" rev-parse HEAD)"                   # gate ref: the tip BEFORE this poke
+  case "$provider" in
+    fake)  run_fake_resume "$slug" "$wt" "$pf" ;;
+    codex) run_codex_resume "$slug" "$wt" "$pf" "$session" ;;
+    grok)  run_grok_resume "$slug" "$wt" "$pf" "$session" ;;
+    *) die "unknown provider in metadata: $provider" ;;
+  esac
+  require_peon_contract "$wt" "$pre"
+  echo "poked $slug — review with: peon report $slug"
+}
+
+cleanup_peon() {
+  local repo="$1" wt="$2" slug="$3" delflag="$4"
+  git -C "$repo" worktree remove --force "$wt" 2>/dev/null \
+    || { rm -rf "$wt"; git -C "$repo" worktree prune 2>/dev/null || true; }
+  git -C "$repo" branch "$delflag" "peon/$slug" 2>/dev/null || true
+  rm -f "$META_ROOT/$slug.json" "$LOG_ROOT/$slug".*      # meta ALWAYS goes — a slug must never stay reserved
+}
+
+cmd_merge() {
+  local slug="${1:-}" into=""
+  [ -n "$slug" ] || die "usage: peon merge <slug> [--into BRANCH]"
+  shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --into) [ -n "${2:-}" ] || die "--into needs a value"; into="$2"; shift 2 ;;
+      *) die "unknown merge option: $1" ;;
+    esac
+  done
+  local wt repo branch task current pre_head
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  repo="$(meta_get "$slug" repo)"
+  branch="$(meta_get "$slug" branch)"
+  task="$(meta_get "$slug" task)"
+  [ -z "$(git -C "$wt" status --porcelain)" ] \
+    || die "peon worktree has uncommitted changes — 'peon poke $slug' to have them committed, or 'peon scrap $slug' to discard"
+  [ "$(git -C "$wt" rev-parse HEAD)" = "$(git -C "$repo" rev-parse "refs/heads/$branch")" ] \
+    || die "worktree HEAD is not at the tip of $branch — the peon left its branch; refusing to merge a partial tree ('peon report $slug' to inspect)"
+  require_clean "$repo" "merge target $repo"
+  current="$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
+  [ "$current" != "DETACHED" ] \
+    || die "$repo has a detached HEAD — check out a branch first (a merge onto detached HEAD is orphaned the moment you switch)"
+  if [ -n "$into" ]; then
+    [ "$current" = "$into" ] || die "--into $into but $current is checked out — check out $into yourself first (peon never switches your branch)"
+  fi
+  pre_head="$(git -C "$repo" rev-parse HEAD)"
+  if ! git -C "$repo" merge --no-ff --no-commit "$branch" >/dev/null 2>&1; then
+    git -C "$repo" merge --abort 2>/dev/null || true
+    die "merge of $branch does not apply cleanly — resolve manually or 'peon poke $slug' to have it rebase/fix"
+  fi
+  if git -C "$repo" diff --cached --quiet; then
+    git -C "$repo" merge --abort 2>/dev/null || true
+    git -C "$repo" reset -q --hard "$pre_head"
+    die "nothing to merge from $branch (already up to date?)"
+  fi
+  if ! git -C "$repo" cat-file -e "$pre_head:PEON_REPORT.md" 2>/dev/null; then
+    git -C "$repo" rm -qf PEON_REPORT.md 2>/dev/null || true   # review artifact, not product code
+  fi
+  git -C "$repo" commit -qm "merge peon/$slug: $(printf '%.60s' "$task")"
+  cleanup_peon "$repo" "$wt" "$slug" -d
+  echo "merged $branch into $(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo HEAD) and cleaned up"
+}
+
+cmd_scrap() {
+  local slug="${1:-}"
+  [ -n "$slug" ] || die "usage: peon scrap <slug>"
+  local wt repo
+  wt="$(find_wt "$slug")"
+  repo="$(meta_get "$slug" repo)"
+  if [ -d "$wt" ] && [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then
+    echo "peon: warning: discarding uncommitted changes in $wt" >&2
+  fi
+  cleanup_peon "$repo" "$wt" "$slug" -D
+  echo "scrapped $slug (worktree, branch, and metadata removed; work discarded)"
+}
+
+dry_run_stub() {  # $1=slug $2=wt, rest=cmdline — record the command; fake work so the contract gate passes
+  local slug="$1" wt="$2"; shift 2
+  printf '%s\n' "$*" >> "$LOG_ROOT/$slug.cmd"
+  ( cd "$wt" \
+    && echo "dry" >> DRY_RUN.txt && git add DRY_RUN.txt && git commit -qm "dry-run" \
+    && printf '# Peon Report\n\ndry run.\n' > PEON_REPORT.md \
+    && git add PEON_REPORT.md && git commit --allow-empty -qm "dry-run report" )
+  SESSION="dry-run"
+}
+
+extract_codex_session() {  # $1=jsonl log — prints session id or exits non-zero (fail closed)
+  python3 - "$1" <<'PYEOF'
+import json, sys
+KEYS = ("session_id", "conversation_id", "thread_id")   # preference order
+found = {k: [] for k in KEYS}
+def walk(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k in KEYS and isinstance(v, str) and v and v not in found[k]:
+                found[k].append(v)
+            walk(v)
+    elif isinstance(o, list):
+        for i in o:
+            walk(i)
+for line in open(sys.argv[1], errors="replace"):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        walk(json.loads(line))
+    except ValueError:
+        continue
+for k in KEYS:
+    if len(found[k]) == 1:
+        print(found[k][0]); sys.exit(0)
+    if len(found[k]) > 1:
+        sys.exit(2)      # ambiguous — refuse to guess
+sys.exit(1)              # none found
+PYEOF
+}
+
+grok_approve_args() {
+  case "$GROK_APPROVE" in
+    mode:auto|mode:dontAsk|mode:acceptEdits|mode:default) printf -- '--permission-mode %s' "${GROK_APPROVE#mode:}" ;;
+    always) printf -- '--always-approve' ;;
+    *) die "invalid GROK_APPROVE: '$GROK_APPROVE' (use mode:auto|mode:dontAsk|mode:acceptEdits|mode:default or always)" ;;
+  esac
+}
+
+run_codex() {
+  local slug="$1" wt="$2" pf="$3" log="$LOG_ROOT/$slug.codex.jsonl"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "codex exec --json -s workspace-write -c approval_policy=never - < $pf"
+    return
+  fi
+  ( cd "$wt" && codex exec --json -s workspace-write -c approval_policy=never - < "$pf" ) \
+    > "$log" 2>"$LOG_ROOT/$slug.codex.err" || die "codex exec failed — see $log"
+  SESSION="$(extract_codex_session "$log")" \
+    || die "could not extract an unambiguous codex session id from $log — poke would be impossible; inspect the log, then scrap or fix extract_codex_session"
+}
+
+run_codex_resume() {
+  local slug="$1" wt="$2" pf="$3" session="$4" log="$LOG_ROOT/$slug.codex.jsonl"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "codex exec resume $session -c sandbox_mode=\"workspace-write\" -c approval_policy=never - < $pf"
+    return
+  fi
+  ( cd "$wt" && codex exec resume "$session" -c sandbox_mode="workspace-write" -c approval_policy=never - < "$pf" ) \
+    >> "$log" 2>>"$LOG_ROOT/$slug.codex.err" || die "codex resume failed — see $log"
+  SESSION="$session"
+}
+
+run_grok() {
+  local slug="$1" wt="$2" pf="$3" log="$LOG_ROOT/$slug.grok.log"
+  local approve_args
+  approve_args="$(grok_approve_args)" || exit 1
+  SESSION="$(uuidgen | tr 'A-Z' 'a-z')"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "grok -s $SESSION --sandbox workspace $approve_args --prompt-file $pf"
+    SESSION="dry-run"
+    return
+  fi
+  ( cd "$wt" && grok -s "$SESSION" --sandbox workspace $approve_args --prompt-file "$pf" ) \
+    > "$log" 2>&1 || die "grok failed — see $log"
+}
+
+run_grok_resume() {
+  local slug="$1" wt="$2" pf="$3" session="$4" log="$LOG_ROOT/$slug.grok.log"
+  local approve_args
+  approve_args="$(grok_approve_args)" || exit 1
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "grok --resume $session --sandbox workspace $approve_args --prompt-file $pf"
+    return
+  fi
+  ( cd "$wt" && grok --resume "$session" --sandbox workspace $approve_args --prompt-file "$pf" ) \
+    >> "$log" 2>&1 || die "grok resume failed — see $log"
+  SESSION="$session"
+}
+
+cmd="${1:-}"
+[ -n "$cmd" ] || { usage >&2; exit 1; }
+shift || true
+
+case "$cmd" in
+  dispatch) cmd_dispatch "$@" ;;
+  list)     cmd_list "$@" ;;
+  report)   cmd_report "$@" ;;
+  diff)     cmd_diff "$@" ;;
+  poke)     cmd_poke "$@" ;;
+  merge)    cmd_merge "$@" ;;
+  scrap)    cmd_scrap "$@" ;;
+  help|-h|--help) usage ;;
+  *) die "unknown command: $cmd (try 'peon help')" ;;
+esac

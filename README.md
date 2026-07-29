@@ -1,56 +1,15 @@
 # codex-in-claude
 
-A Claude Code skill for getting a second opinion on plans from Codex, Grok, or both. Claude reads your plan, sends it to an external reviewer for review, then mediates the feedback — agreeing, pushing back, or negotiating across multiple rounds — instead of blindly passing the output through.
+Two Claude Code skills that put external CLI agents (Codex, Grok) to work for Claude:
 
-## What it does
+- **plan-check** — pull *opinions* in: second-opinion plan review, with Claude mediating feedback across rounds (solo reviewer or parallel "council").
+- **peon-poke** — push *labor* out: farm implementation chores to a "peon" working in an isolated git worktree; Claude reviews the diff and merges or sends it back.
+
+## plan-check
 
 When you've written a plan (design doc, spec, architecture note) and want another set of eyes on it, this skill runs Codex and/or Grok against the plan and has Claude critically evaluate the response. You get a consolidated `Agree / Partially agree / Disagree` summary per round, with Claude using its conversation context to filter signal from noise.
 
-Default is 2 rounds. Each subsequent round narrows the discussion — settled points drop out, remaining concerns get sharper.
-
-**Council mode** sends the identical prompt to all reviewers in parallel and merges their findings with attribution (*Both* / *Codex only* / *Grok only*). Reviewers never see each other's round-1 output — independent takes are the point; consensus findings gain confidence, unique findings get extra scrutiny. When reviewers directly contradict each other, Claude can relay one's argument into the other's next round and let each respond in its own session.
-
-## Requirements
-
-- [Claude Code](https://claude.com/claude-code)
-- At least one reviewer CLI, installed, authenticated, and on `PATH`:
-  - [Codex CLI](https://github.com/openai/codex) (`codex`)
-  - [Grok Build CLI](https://docs.x.ai/) (`grok`)
-
-The skill shells out to `codex exec` / `codex exec resume --last` and `grok --single` / `grok --resume`, so anything that breaks those will break the skill.
-
-## Install
-
-Copy `SKILL.md` into your Claude Code skills directory:
-
-```bash
-mkdir -p ~/.claude/skills/plan-check
-curl -fsSL https://raw.githubusercontent.com/ytubecoder/codex-in-claude/main/SKILL.md \
-  -o ~/.claude/skills/plan-check/SKILL.md
-```
-
-Or clone and symlink:
-
-```bash
-git clone https://github.com/ytubecoder/codex-in-claude.git
-mkdir -p ~/.claude/skills/plan-check
-ln -s "$(pwd)/codex-in-claude/SKILL.md" ~/.claude/skills/plan-check/SKILL.md
-```
-
-Restart Claude Code (or start a new session) to pick up the skill.
-
-## Usage
-
-Trigger phrases:
-
-- "get codex to check" / "get grok to check"
-- "lets review with codex" / "lets review with grok"
-- "send to codex" / "send to grok"
-- "codex review" / "grok review"
-- "second opinion on this plan"
-- "ask both" / "council review" / "third opinion"
-
-Or invoke directly:
+Default is 2 rounds. **Council mode** sends the identical prompt to all reviewers in parallel and merges their findings with attribution (*Both* / *Codex only* / *Grok only*). Reviewers never see each other's round-1 output — independent takes are the point.
 
 | Invocation | Behavior |
 |---|---|
@@ -60,17 +19,50 @@ Or invoke directly:
 | `/plan-check path/to/plan.md` | Reviews a specific file |
 | `/plan-check 3` | Runs 3 rounds instead of the default 2 |
 
-Modifiers combine: `/plan-check council 3 docs/plan.md`.
+## peon-poke
 
-## How it works
+Give Claude an implementation chore to delegate ("have codex build the pagination", "farm the test backfill out to grok") and it dispatches a peon: an isolated git worktree on a `peon/<slug>` branch where the provider CLI works with write access, commits its changes, and files a `PEON_REPORT.md`. The harness enforces that contract — a peon that commits nothing, skips its report, or leaves a dirty tree fails loudly with the worktree preserved for inspection. Claude reviews the report and diff like a code review, iterates via `peon poke <slug> "<feedback>"` (same provider session, context intact), and only an explicit `peon merge` lands anything on your branch. `peon scrap` discards.
 
-1. Claude finds the plan file(s) — either explicit paths, the file just produced in conversation, or candidates like `plan.md`, `*design*.md`, `*spec*.md`.
-2. The reviewer(s) review for missing requirements, technical risks, sequencing, dependencies, and ambiguities, flagging severity (critical / warning / note). Council mode runs reviewers concurrently — wall time is the slowest reviewer, not the sum.
-3. Claude evaluates each finding against conversation context and presents a unified summary, taking a position on every point. Council findings are deduped and attributed per reviewer first.
-4. Subsequent rounds resume each reviewer's own session and focus on unresolved items.
-5. Final summary lists agreed changes, unresolved disagreements (user decides), and a verdict.
+The mechanics live in `bin/peon` — a dependency-light shell script (git + python3 + uuidgen) any orchestrator can call, not just Claude:
 
-The skill never edits plan files automatically. It hands you findings and a recommendation; you make the calls.
+```
+peon dispatch <codex|grok> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
+peon list | report <slug> | diff <slug>
+peon poke <slug> "<feedback>"
+peon merge <slug> | scrap <slug>
+```
+
+State lives under `~/.peon/` by default (worktrees, logs, metadata), overridable via `PEON_HOME` — never inside your repo.
+
+## Requirements
+
+- [Claude Code](https://claude.com/claude-code)
+- At least one provider CLI, installed, authenticated, and on `PATH`:
+  - [Codex CLI](https://github.com/openai/codex) (`codex`)
+  - [Grok Build CLI](https://docs.x.ai/) (`grok`)
+- For peon-poke: `git`, `python3`, `uuidgen` (all standard on macOS/Linux)
+
+## Install
+
+Clone, then link the skills and the `peon` script:
+
+```bash
+git clone https://github.com/ytubecoder/codex-in-claude.git
+cd codex-in-claude
+
+mkdir -p ~/.claude/skills/plan-check ~/.claude/skills/peon-poke ~/.local/bin
+ln -sf "$(pwd)/skills/plan-check/SKILL.md" ~/.claude/skills/plan-check/SKILL.md
+ln -sf "$(pwd)/skills/peon-poke/SKILL.md"  ~/.claude/skills/peon-poke/SKILL.md
+ln -sf "$(pwd)/bin/peon" ~/.local/bin/peon   # or any writable PATH dir
+```
+
+Or install by copy: `curl -fsSL https://raw.githubusercontent.com/ytubecoder/codex-in-claude/main/skills/plan-check/SKILL.md -o ~/.claude/skills/plan-check/SKILL.md` (same pattern for peon-poke; copy `bin/peon` somewhere on PATH). Restart Claude Code (or start a new session) to pick up the skills.
+
+**Upgrading from the single-skill layout:** `SKILL.md` moved to `skills/plan-check/SKILL.md`. If you installed by symlinking the old root `SKILL.md`, the link is now dangling — re-run the symlink line above.
+
+## Tests
+
+`bash tests/peon.test.sh` — deterministic lifecycle tests using a built-in fake provider and a dry-run seam; no provider CLIs needed, no cost.
 
 ## License
 
