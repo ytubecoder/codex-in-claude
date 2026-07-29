@@ -1,6 +1,6 @@
 # peon-poke — design spec (2026-07-29)
 
-**Status:** draft, awaiting user approval. No implementation yet.
+**Status:** approved 2026-07-29 (in conversation). Council-reviewed (Codex + Grok, 2 rounds) — agreed amendments are reflected in the implementation plan (`docs/superpowers/plans/2026-07-29-peon-poke.md`, revision 2) and in the deviations noted below. Implementation in progress.
 
 ## Purpose
 
@@ -47,10 +47,10 @@ Skill flow:
 
 - Dispatch: `git worktree add -b peon/<slug> ~/.peon/worktrees/<repoName>-<slug> <base>` (base defaults to current HEAD). Worktrees live outside the repo to avoid nesting; branches are namespaced `peon/*`.
 - The provider CLI runs headless *inside the worktree* with a write-enabled, worktree-scoped sandbox:
-  - codex: `codex exec` with workspace-write / full-auto flags, cwd = worktree
-  - grok: pinned session UUID (`-s`), `--sandbox workspace`, non-interactive permission mode, cwd = worktree
-- **Peon prompt contract** (embedded in every dispatch): do the task; commit all changes to the current branch with clear messages; write `PEON_REPORT.md` (what changed, why, how verified, open questions) and commit it too.
-- **Metadata:** `.peon.json` in the worktree (provider, session id, task text, base ref, timestamps) so any later session or agent can resume, review, or clean up cold.
+  - codex: `codex exec -s workspace-write -c approval_policy=never`, cwd = worktree (resume: `-c sandbox_mode=` — resume has no `-s`)
+  - grok: pinned session UUID (`-s`), `--sandbox workspace`, approve strategy via `GROK_APPROVE`, cwd = worktree
+- **Peon prompt contract** (embedded in every dispatch): do the task; commit all changes to the current branch with clear messages; write `PEON_REPORT.md` (what changed, why, how verified, open questions) and commit it too; leave the worktree clean. The harness *enforces* this after every run (contract gate: commits since gate ref, committed report, clean tree — violations fail loudly with the worktree preserved).
+- **Metadata (amended per council review):** `$PEON_HOME/meta/<slug>.json` — *outside* the worktree (provider, session id, task text, base sha, worktree path, timestamps) so any later session or agent can resume, review, or clean up cold. Slugs are global identities, atomically reserved. Original design placed `.peon.json` inside the worktree; moved out to avoid `info/exclude` mutation, races, and the peon committing harness state.
 
 ## Provider mechanics — verified 2026-07-29 (codex-cli 0.145.0, grok 0.2.112)
 
