@@ -45,7 +45,7 @@ t  "meta file present"             test -f "$PEON_HOME/meta/greet.json"
 t  "meta has provider"             sh -c "grep -q '\"provider\": \"fake\"' '$PEON_HOME/meta/greet.json'"
 t  "meta has session"              sh -c "grep -q '\"session\": \"fake-greet\"' '$PEON_HOME/meta/greet.json'"
 t  "meta records worktree path"    sh -c "grep -q '\"worktree\":' '$PEON_HOME/meta/greet.json'"
-t  "worktree is clean"             test -z "$(git -C "$WT" status --porcelain)"
+t  "worktree is clean"             sh -c "test -d '$WT' && test -z \"\$(git -C '$WT' status --porcelain)\""
 t  "nothing extra in worktree"     sh -c "test ! -e '$WT/.peon.json'"
 tf "slug collision refused"        "$PEON" dispatch fake "again" --repo "$R" --slug greet
 tf "unknown provider refused"      "$PEON" dispatch claude "task" --repo "$R"
@@ -62,6 +62,12 @@ RB2="$(mkrepo)"
 tf "report tracked at base refused" "$PEON" dispatch fake "x" --repo "$RB2" --slug rb
 tf "bad base ref refused"          "$PEON" dispatch fake "x" --repo "$R" --slug badbase --base nosuchref
 t  "no stale reservation left"     sh -c "test ! -f '$PEON_HOME/meta/badbase.json'"
+# I3: real test for reservation release (badbase above never reaches reserve_slug — this does)
+mkdir -p "$PEON_HOME/worktrees"
+chmod 500 "$PEON_HOME/worktrees" 2>/dev/null || true
+tf "worktree add failure releases slug" "$PEON" dispatch fake "x" --repo "$R" --slug relslug
+chmod 700 "$PEON_HOME/worktrees"
+t  "reservation released"          sh -c "test ! -f '$PEON_HOME/meta/relslug.json'"
 tf "contract gate trips on dirt"   env PEON_FAKE_DIRTY=1 "$PEON" dispatch fake "dirty task" --repo "$R" --slug dirtyp
 t  "dirty peon worktree preserved" test -d "$PEON_HOME/worktrees/$(basename "$R")-dirtyp"
 
@@ -73,11 +79,20 @@ t  "list shows slug"               sh -c "'$PEON' list | grep -q listme"
 t  "list shows provider"           sh -c "'$PEON' list | grep -q fake"
 t  "list --repo filters in"        sh -c "'$PEON' list --repo '$R' | grep -q listme"
 RO="$(mkrepo)"
-t  "list --repo filters out"       sh -c "! '$PEON' list --repo '$RO' | grep -q listme"
+t  "list --repo filters out"       sh -c "'$PEON' list --repo '$RO' >'$TESTTMP/peonlist.$$' 2>&1 && ! grep -q listme '$TESTTMP/peonlist.$$'"
 t  "report prints report"          sh -c "'$PEON' report listme | grep -q 'Peon Report'"
 t  "report prints diffstat"        sh -c "'$PEON' report listme | grep -q 'FAKE_WORK-listme.txt'"
 t  "diff shows content"            sh -c "'$PEON' diff listme | grep -q 'list me'"
 tf "report unknown slug fails"     "$PEON" report nosuchpeon
+
+# I2: reservation placeholder is valid JSON; meta_get / list / report must not traceback on a
+# reserving/corrupt meta row
+mkdir -p "$PEON_HOME/meta"
+printf '{"slug":"ghost","state":"reserving"}\n' > "$PEON_HOME/meta/ghost.json"
+t  "list survives reserving meta"              "$PEON" list
+t  "report on reserving meta has no traceback" sh -c "! '$PEON' report ghost 2>&1 | grep -q Traceback"
+tf "report on reserving meta fails cleanly"    "$PEON" report ghost
+rm -f "$PEON_HOME/meta/ghost.json"
 
 # --- Task 4: poke ---
 fresh_home
@@ -106,7 +121,26 @@ t  "merge commit exists"           sh -c "git -C '$R' log --oneline -1 | grep -q
 t  "worktree removed"              sh -c "test ! -d '$WT'"
 t  "branch removed"                sh -c "! git -C '$R' show-ref --verify --quiet refs/heads/peon/landme"
 t  "meta removed"                  sh -c "test ! -f '$PEON_HOME/meta/landme.json'"
-t  "repo clean after merge"        test -z "$(git -C "$R" status --porcelain)"
+t  "repo clean after merge"        sh -c "test -d '$R' && test -z \"\$(git -C '$R' status --porcelain)\""
+
+# C1: merge must refuse when the peon worktree's HEAD isn't at the tip of its own branch
+# (a peon that detached HEAD and committed there gets its report/diff reviewed off HEAD,
+# but a plain merge of the branch would land the stale tip and cleanup would then destroy
+# the unreachable commits)
+"$PEON" dispatch fake "c1 stray head" --repo "$R" --slug c1slug >/dev/null 2>&1
+WTC1="$PEON_HOME/worktrees/$(basename "$R")-c1slug"
+git -C "$WTC1" checkout -q --detach
+git -C "$WTC1" commit -q --allow-empty -m stray
+tf "merge refuses detached peon HEAD" "$PEON" merge c1slug
+"$PEON" scrap c1slug >/dev/null 2>&1
+
+# C2: merge must refuse a detached TARGET repo HEAD unconditionally (not just under --into) —
+# a merge commit onto detached HEAD is orphaned the moment you switch branches
+"$PEON" dispatch fake "c2 detached target" --repo "$R" --slug c2slug >/dev/null 2>&1
+git -C "$R" checkout -q --detach
+tf "merge refuses detached target"   "$PEON" merge c2slug
+git -C "$R" checkout -q -
+t  "merge works again after checkout" "$PEON" merge c2slug
 
 # conflict: peon and main both edit README.md
 R2="$(mkrepo)"
@@ -115,7 +149,7 @@ WT2="$PEON_HOME/worktrees/$(basename "$R2")-clash"
 ( cd "$WT2" && echo "peon side" > README.md && git add README.md && git commit -qm "fake: conflict edit" )
 ( cd "$R2" && echo "main side" > README.md && git add README.md && git commit -qm "main edit" )
 tf "conflicting merge refused"     "$PEON" merge clash
-t  "repo clean after aborted merge" test -z "$(git -C "$R2" status --porcelain)"
+t  "repo clean after aborted merge" sh -c "test -d '$R2' && test -z \"\$(git -C '$R2' status --porcelain)\""
 t  "worktree intact after abort"   test -d "$WT2"
 tf "merge --into wrong branch"     "$PEON" merge clash --into not-checked-out-branch
 t  "scrap succeeds"                "$PEON" scrap clash
@@ -177,10 +211,18 @@ t  "grok prompt file"              sh -c "grep -q -- '--prompt-file' '$GCMD'"
 t  "codex poke dry ok"             "$PEON" poke cdx "revise"
 t  "codex resume by session id"    sh -c "grep -q 'codex exec resume dry-run' '$CMD'"
 t  "codex resume sandbox via -c"   sh -c "grep -q 'sandbox_mode=\"workspace-write\"' '$CMD'"
+t  "resume line has no -s flag"    sh -c "! grep -E -q 'resume .* -s ' '$CMD'"
+t  "no --last anywhere"            sh -c "! grep -q -- '--last' '$CMD'"
 t  "grok poke dry ok"              "$PEON" poke grk "revise"
 t  "grok resume by session id"     sh -c "grep -q -- '--resume dry-run' '$GCMD'"
 GA="$(GROK_APPROVE=always "$PEON" dispatch grok "x" --repo "$R" --slug grka >/dev/null 2>&1; grep -c -- '--always-approve' "$PEON_HOME/logs/grka.cmd")"
 t  "GROK_APPROVE=always maps flag" test "$GA" -ge 1
+
+# I1/M10: invalid GROK_APPROVE must fail closed (not silently dispatch with no approve flag)
+tf "invalid GROK_APPROVE fails closed" env GROK_APPROVE=bogus "$PEON" dispatch grok "x" --repo "$R" --slug ga1
+t  "invalid GROK_APPROVE leaves no cmd log" sh -c "test ! -f '$PEON_HOME/logs/ga1.cmd'"
+"$PEON" scrap ga1 >/dev/null 2>&1
+
 unset PEON_DRY_RUN
 
 echo; echo "passed=$PASS failed=$FAIL"

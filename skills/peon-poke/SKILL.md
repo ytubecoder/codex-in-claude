@@ -19,10 +19,10 @@ All mechanics live in the `peon` script — never hand-roll worktrees or provide
 | `peon report <slug>` | PEON_REPORT.md + commits + diffstat vs base (+ dirty-tree warning) |
 | `peon diff <slug>` | Full diff vs base |
 | `peon poke <slug> "<feedback>"` | Resume the same provider session for revisions; fails loudly on a no-op round |
-| `peon merge <slug> [--into REF]` | After review: merge, strip the report, clean up. `--into` only asserts REF is already checked out — peon never switches your branch. |
+| `peon merge <slug> [--into BRANCH]` | After review: merge, strip the report, clean up. `--into` only asserts BRANCH is already checked out — peon never switches your branch. |
 | `peon scrap <slug>` | Discard the work, remove worktree + branch + metadata |
 
-Slugs are globally unique across repos. Grok approval strategy is `GROK_APPROVE` (`mode:<m>` or `always`).
+Slugs are globally unique across repos. Grok approval strategy is `GROK_APPROVE` (`mode:<m>` or `always`). State (worktrees, logs, metadata) lives under `~/.peon/` by default, overridable via `PEON_HOME`.
 
 ## Workflow
 

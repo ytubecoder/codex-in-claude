@@ -23,16 +23,16 @@ Default is 2 rounds. **Council mode** sends the identical prompt to all reviewer
 
 Give Claude an implementation chore to delegate ("have codex build the pagination", "farm the test backfill out to grok") and it dispatches a peon: an isolated git worktree on a `peon/<slug>` branch where the provider CLI works with write access, commits its changes, and files a `PEON_REPORT.md`. The harness enforces that contract — a peon that commits nothing, skips its report, or leaves a dirty tree fails loudly with the worktree preserved for inspection. Claude reviews the report and diff like a code review, iterates via `peon poke <slug> "<feedback>"` (same provider session, context intact), and only an explicit `peon merge` lands anything on your branch. `peon scrap` discards.
 
-The mechanics live in `bin/peon` — a dependency-light shell script (git + python3) any orchestrator can call, not just Claude:
+The mechanics live in `bin/peon` — a dependency-light shell script (git + python3 + uuidgen) any orchestrator can call, not just Claude:
 
 ```
-peon dispatch <codex|grok> "<task>" [--repo DIR] [--base REF] [--slug NAME]
+peon dispatch <codex|grok> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
 peon list | report <slug> | diff <slug>
 peon poke <slug> "<feedback>"
 peon merge <slug> | scrap <slug>
 ```
 
-State lives under `~/.peon/` (worktrees, logs, metadata) — never inside your repo.
+State lives under `~/.peon/` by default (worktrees, logs, metadata), overridable via `PEON_HOME` — never inside your repo.
 
 ## Requirements
 
