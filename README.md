@@ -1,15 +1,69 @@
 # codex-in-claude
 
-Two Claude Code skills that put external CLI agents (Codex, Grok) to work for Claude:
+![License: MIT](https://img.shields.io/badge/license-MIT-green)
+![Works with Claude Code](https://img.shields.io/badge/works%20with-Claude%20Code-blueviolet)
+![Puts to work: Codex CLI](https://img.shields.io/badge/puts%20to%20work-Codex%20CLI-orange)
+![Puts to work: Grok CLI](https://img.shields.io/badge/puts%20to%20work-Grok%20CLI-black)
+![deps: bash + git + python3](https://img.shields.io/badge/deps-bash%203.2%2B%20·%20git%20·%20python3-lightgrey)
 
-- **plan-check** — pull *opinions* in: second-opinion plan review, with Claude mediating feedback across rounds (solo reviewer or parallel "council").
-- **peon-poke** — push *labor* out: farm implementation chores to a "peon" working in an isolated git worktree; Claude reviews the diff and merges or sends it back.
+```
+                opinions in                              labor out
+             ◀───────────────                        ───────────────▶
 
-## plan-check
+   ┌──────────────┐               ╔═════════════╗               ┌──────────────┐
+   │  reviewers   │ ◀─── plan ─── ║   CLAUDE    ║ ─── task ───▶ │    peons     │
+   │ codex · grok │ ─ findings ─▶ ║  (foreman)  ║ ◀── report ── │ codex · grok │
+   └──────────────┘               ╚═════════════╝               └──────────────┘
+     read-only sandboxes        mediates · reviews          isolated worktrees
+        /plan-check                  merges                 /peon-poke  "zug zug"
+```
 
-When you've written a plan (design doc, spec, architecture note) and want another set of eyes on it, this skill runs Codex and/or Grok against the plan and has Claude critically evaluate the response. You get a consolidated `Agree / Partially agree / Disagree` summary per round, with Claude using its conversation context to filter signal from noise.
+> Opinions in. Labor out. Nothing lands without the foreman's review.
 
-Default is 2 rounds. **Council mode** sends the identical prompt to all reviewers in parallel and merges their findings with attribution (*Both* / *Codex only* / *Grok only*). Reviewers never see each other's round-1 output — independent takes are the point.
+Two Claude Code skills that put external CLI agents (Codex, Grok) to work *for* Claude instead of alongside it:
+
+- **`/plan-check`** pulls **opinions in** — second-opinion plan review, solo or as a parallel "council", with Claude mediating every round.
+- **`/peon-poke`** pushes **labor out** — implementation chores farmed to a "peon" in an isolated git worktree, reviewed and merged by Claude.
+
+Claude stays the foreman because Claude has your conversation context — it knows things the reviewers and peons do not. Reviewer feedback gets triaged, not parroted; peon diffs get code-reviewed, not rubber-stamped.
+
+![Terminal session showing a real peon cycle: dispatch to codex, the peon report with commits and diffstat, and the merge](docs/peon-in-action.png)
+
+## Install
+
+### One-liner
+
+```bash
+git clone https://github.com/ytubecoder/codex-in-claude.git ~/codex-in-claude && cd ~/codex-in-claude && \
+mkdir -p ~/.claude/skills/plan-check ~/.claude/skills/peon-poke ~/.local/bin && \
+ln -sf "$(pwd)/skills/plan-check/SKILL.md" ~/.claude/skills/plan-check/SKILL.md && \
+ln -sf "$(pwd)/skills/peon-poke/SKILL.md"  ~/.claude/skills/peon-poke/SKILL.md && \
+ln -sf "$(pwd)/bin/peon" ~/.local/bin/peon
+```
+
+Symlinks mean `git pull` upgrades you. Clone anywhere you like; `~/.local/bin` can be any writable `PATH` dir. Restart Claude Code (or start a new session) to pick up the skills.
+
+### Or tell your agent
+
+> Clone https://github.com/ytubecoder/codex-in-claude to ~/codex-in-claude, symlink skills/plan-check/SKILL.md to ~/.claude/skills/plan-check/SKILL.md and skills/peon-poke/SKILL.md to ~/.claude/skills/peon-poke/SKILL.md, and symlink bin/peon into a directory on my PATH.
+
+**Upgrading from the single-skill layout:** `SKILL.md` moved to `skills/plan-check/SKILL.md`. If you symlinked the old root `SKILL.md`, the link is now dangling — re-run the symlink line above.
+
+## `/plan-check` — opinions in
+
+When you've written a plan (design doc, spec, architecture note) and want another set of eyes on it, this skill sends it to Codex and/or Grok and has Claude critically evaluate what comes back. Reviewers run in read-only sandboxes and never touch your files.
+
+```
+  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+  │ ROUND 1  │───▶│  TRIAGE  │───▶│ ROUND 2+ │───▶│ VERDICT  │
+  └──────────┘    └──────────┘    └──────────┘    └──────────┘
+   identical       agree /         resume the      ready / needs
+   prompt to all   partially /     sessions,       revision — you
+   reviewers, in   disagree        negotiate,      decide the
+   parallel                        narrow          stalemates
+```
+
+Default is 2 rounds. **Council mode** sends the identical prompt to all reviewers in parallel and merges their findings with attribution (*Both* / *Codex only* / *Grok only*). Reviewers never see each other's round-1 output — independent takes are the point. Consensus findings carry extra weight; single-reviewer findings get extra scrutiny.
 
 | Invocation | Behavior |
 |---|---|
@@ -19,9 +73,31 @@ Default is 2 rounds. **Council mode** sends the identical prompt to all reviewer
 | `/plan-check path/to/plan.md` | Reviews a specific file |
 | `/plan-check 3` | Runs 3 rounds instead of the default 2 |
 
-## peon-poke
+Modifiers combine: `/plan-check council 3 docs/plan.md`. Trigger phrases work too — "get codex to check this", "what does grok think", "second opinion on this plan".
 
-Give Claude an implementation chore to delegate ("have codex build the pagination", "farm the test backfill out to grok") and it dispatches a peon: an isolated git worktree on a `peon/<slug>` branch where the provider CLI works with write access, commits its changes, and files a `PEON_REPORT.md`. The harness enforces that contract — a peon that commits nothing, skips its report, or leaves a dirty tree fails loudly with the worktree preserved for inspection. Claude reviews the report and diff like a code review, iterates via `peon poke <slug> "<feedback>"` (same provider session, context intact), and only an explicit `peon merge` lands anything on your branch. `peon scrap` discards.
+![Terminal session showing a real plan-check round: codex findings followed by Claude's consolidated agree/partially-agree/disagree triage](docs/plan-check-in-action.png)
+
+## `/peon-poke` — labor out
+
+Give Claude an implementation chore to delegate ("have codex build the pagination", "farm the test backfill out to grok") and it dispatches a peon: an isolated git worktree on a `peon/<slug>` branch where the provider CLI works with write access, commits its changes, and files a `PEON_REPORT.md`. Nothing reaches your working tree without review and an explicit merge.
+
+```
+  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+  │ DISPATCH │───▶│   WORK   │───▶│  REPORT  │───▶│  REVIEW  │───▶│  MERGE   │
+  └──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
+   worktree +      provider        PEON_REPORT     foreman reads    explicit
+   peon/<slug>     commits in      + commits +     report + diff    merge only —
+   branch          isolation       clean tree      poke ⟲ / scrap   or scrap
+```
+
+| Step | What happens | Gate |
+|------|-------------|------|
+| **1. Scope** | Claude tightens the chore into one well-defined task with acceptance criteria and file paths. Peons execute; they don't design. | Task is unambiguous |
+| **2. Dispatch** | `peon dispatch codex "<task>"` creates the worktree and branch, then runs the provider inside it. | Clean repo, or explicit `--force` |
+| **3. Work** | The peon implements, commits, and files `PEON_REPORT.md`. | **Contract gate:** commits made + report committed + clean tree. Violations fail loudly, worktree preserved for inspection |
+| **4. Review** | `peon report <slug>`, then `peon diff <slug>` — judged like a code review, against conversation context. | Foreman reads the actual diff |
+| **5. Poke** ⟲ | `peon poke <slug> "<feedback>"` resumes the same provider session for revisions. Repeat until right. | No-op revision rounds fail loudly |
+| **6. Merge** | `peon merge <slug>` lands it on your branch, strips the report, cleans up. `peon scrap` discards. | Nothing auto-lands, ever |
 
 The mechanics live in `bin/peon` — a dependency-light shell script (git + python3 + uuidgen) any orchestrator can call, not just Claude:
 
@@ -42,24 +118,6 @@ State lives under `~/.peon/` by default (worktrees, logs, metadata), overridable
   - [Grok Build CLI](https://docs.x.ai/) (`grok`)
 - For peon-poke: `git`, `python3`, `uuidgen` (all standard on macOS/Linux)
 
-## Install
-
-Clone, then link the skills and the `peon` script:
-
-```bash
-git clone https://github.com/ytubecoder/codex-in-claude.git
-cd codex-in-claude
-
-mkdir -p ~/.claude/skills/plan-check ~/.claude/skills/peon-poke ~/.local/bin
-ln -sf "$(pwd)/skills/plan-check/SKILL.md" ~/.claude/skills/plan-check/SKILL.md
-ln -sf "$(pwd)/skills/peon-poke/SKILL.md"  ~/.claude/skills/peon-poke/SKILL.md
-ln -sf "$(pwd)/bin/peon" ~/.local/bin/peon   # or any writable PATH dir
-```
-
-Or install by copy: `curl -fsSL https://raw.githubusercontent.com/ytubecoder/codex-in-claude/main/skills/plan-check/SKILL.md -o ~/.claude/skills/plan-check/SKILL.md` (same pattern for peon-poke; copy `bin/peon` somewhere on PATH). Restart Claude Code (or start a new session) to pick up the skills.
-
-**Upgrading from the single-skill layout:** `SKILL.md` moved to `skills/plan-check/SKILL.md`. If you installed by symlinking the old root `SKILL.md`, the link is now dangling — re-run the symlink line above.
-
 ## Tests
 
 `bash tests/peon.test.sh` — deterministic lifecycle tests using a built-in fake provider and a dry-run seam; no provider CLIs needed, no cost.
@@ -67,3 +125,5 @@ Or install by copy: `curl -fsSL https://raw.githubusercontent.com/ytubecoder/cod
 ## License
 
 MIT
+
+**Works inside:** [Claude Code](https://claude.com/claude-code) · **Puts to work:** [Codex CLI](https://github.com/openai/codex), [Grok Build CLI](https://docs.x.ai/) · `bin/peon` is orchestrator-agnostic — any agent that can run shell commands can be the foreman
