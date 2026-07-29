@@ -1,5 +1,27 @@
 # Session Log
 
+## 2026-07-30 — peon-poke: spec → council-reviewed plan → parallel build → live-verified ship
+
+### Summary
+- Shipped the repo's second function: `bin/peon` (dispatch implementation tasks to codex/grok in isolated worktrees; dispatch/list/report/diff/poke/merge/scrap; 104 deterministic tests) + `skills/peon-poke/SKILL.md`; repo restructured to `skills/{plan-check,peon-poke}/`. Installed: `~/.local/bin/peon` symlink + skills copied into `~/.claude/skills/`.
+- Process was the full gauntlet: brainstorm → spec → written plan → `/plan-check council` (2 rounds) → plan r2 → subagent-driven build in two parallel streams → final whole-branch review (found 2 criticals) → fix wave → scoped re-review → live verification (all 4 spec tests, real provider calls).
+- Fixed a live bug in plan-check itself: its round-2 codex incantation used `exec resume -s`, which codex-cli 0.145.0 rejects — discovered when the council's own round 2 returned empty.
+
+### Lessons Learned
+- **Accepted:** council plan review before building — Grok caught the codex-resume flag break (verified live 3×); the review also drove metadata out of the worktree (`~/.peon/meta/`) and two-stage contract gates. No unresolved disagreements after 2 rounds.
+- **Accepted:** contract gates earned their keep on the FIRST real dispatch — grok exited 0 having committed nothing; pre-gate this would have been a silent no-op merge.
+- **Accepted:** final whole-branch review on the strongest model with reproduction required — it *reproduced* two detached-HEAD data-loss paths in `merge` (worktree HEAD ≠ branch tip half-merges then destroys; detached target commits into the void) that briefs, tests, and council all missed.
+- **Rejected:** grok headless `--permission-mode auto`/`dontAsk` — both allow file edits but block the git-commit shell calls; only `--always-approve` lets a peon commit. Locked as `GROK_APPROVE=always` default.
+- **Gotcha:** `codex exec resume` accepts no `-s/--sandbox` — sandbox via `-c sandbox_mode=`. Broke plan-check's own skill live; both repo and installed copies fixed.
+- **Gotcha:** a dry-run stub that writes byte-identical file content commits fine once, then fails under `set -e` on the second round ("nothing to commit") — Stream A root-caused and fixed with `--allow-empty`.
+
+### Decisions
+- peon metadata lives OUTSIDE the worktree at `$PEON_HOME/meta/<slug>.json`, atomically reserved (noclobber); spec amended — kills `info/exclude` mutation, races, and peon-commits-metadata risk.
+- Poke's contract gate compares against pre-poke HEAD (not base) so a no-op revision round fails loudly.
+- `merge` strips `PEON_REPORT.md` (review artifact) and refuses detached HEADs on either side; scrap warns-then-discards.
+- Worktree path-hash (M3) parked with ruling: fails safe, unreachable with global slugs.
+- peon-poke stays in this repo — same backends as plan-check, opposite direction (opinions in / labor out). Repo rename still open.
+
 ## 2026-07-29 — Add Grok reviewer and council mode
 
 ### Summary

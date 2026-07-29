@@ -19,6 +19,7 @@ This repo is the source of truth. Installed copies on this machine live in `~/.c
 - Metadata is OUT of the worktree: `$PEON_HOME/meta/<slug>.json`, atomically reserved (noclobber) — slugs are global identities. Nothing peon-related is ever written into the user's repo or worktree by the harness.
 - Contract gates after every provider run: commits since gate ref (dispatch: base; poke: pre-poke HEAD) + committed PEON_REPORT.md + clean worktree. Violations fail loudly and preserve the worktree.
 - `bin/peon` is the only interface — skills and agents never hand-roll worktree or provider incantations. bash-3.2-compatible; deps: git, python3, uuidgen. Never jq, never `codex exec resume --last`.
+- Grok headless can only COMMIT with `--always-approve` (`GROK_APPROVE=always`, the live-locked default); `--permission-mode auto`/`dontAsk` permit file edits but block git-commit shell calls — the peon then trips the contract gate having "succeeded".
 - `merge` strips `PEON_REPORT.md` only when the merge target didn't already track it (review artifact, not product code).
 - Tests: `bash tests/peon.test.sh` (fake provider + dry-run, deterministic, no provider CLIs needed). Run after any `bin/peon` change.
 
