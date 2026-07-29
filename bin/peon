@@ -31,12 +31,175 @@ Nothing reaches your working tree without 'peon merge' (which reviews demand fir
 EOF
 }
 
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' \
+    | sed -e 's/[^a-z0-9]\{1,\}/-/g' -e 's/^-//' -e 's/-$//' | cut -c1-30 \
+    | sed -e 's/-$//'
+}
+
+validate_slug() {
+  printf '%s' "$1" | grep -qE '^[a-z0-9][a-z0-9-]{0,39}$' \
+    || die "invalid slug: '$1' (lowercase alphanumerics and hyphens, max 40 chars)"
+  git check-ref-format --branch "peon/$1" >/dev/null 2>&1 \
+    || die "slug is not a valid git branch component: $1"
+}
+
+json_str() { python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"; }
+
+resolve_repo() {
+  git -C "$1" rev-parse --show-toplevel 2>/dev/null || die "not a git repository: $1"
+}
+
+require_clean() {
+  [ -z "$(git -C "$1" status --porcelain)" ] || die "$2 has uncommitted changes (commit/stash first, or --force to dispatch anyway)"
+}
+
+require_peon_contract() {
+  local wt="$1" since="$2"
+  [ "$(git -C "$wt" rev-list --count "$since..HEAD")" -ge 1 ] \
+    || die "peon contract violation: no commits since $since — worktree preserved at $wt ('peon report'/'peon scrap')"
+  git -C "$wt" cat-file -e "HEAD:PEON_REPORT.md" 2>/dev/null \
+    || die "peon contract violation: PEON_REPORT.md not committed — worktree preserved at $wt"
+  [ -z "$(git -C "$wt" status --porcelain)" ] \
+    || die "peon contract violation: uncommitted changes left behind — worktree preserved at $wt"
+}
+
+reserve_slug() {
+  mkdir -p "$META_ROOT"
+  ( set -C; : > "$META_ROOT/$1.json" ) 2>/dev/null \
+    || die "slug already in use: $1 (see 'peon list'; slugs are global)"
+}
+
+write_meta() {
+  cat > "$META_ROOT/$slug.json" <<EOF
+{
+  "slug": "$slug",
+  "provider": "$provider",
+  "session": "$session",
+  "repo": $(json_str "$repo"),
+  "worktree": $(json_str "$wt"),
+  "base_sha": "$base_sha",
+  "branch": "peon/$slug",
+  "task": $(json_str "$task"),
+  "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+}
+
+update_meta_session() {
+  python3 - "$META_ROOT/$1.json" "$2" <<'PYEOF'
+import json, sys
+p, sess = sys.argv[1], sys.argv[2]
+m = json.load(open(p))
+m["session"] = sess
+json.dump(m, open(p, "w"), indent=2)
+PYEOF
+}
+
+dispatch_prompt() {
+  cat <<EOF
+You are a "peon": an autonomous implementation agent working in an isolated git worktree on branch peon/$slug. Complete the task below, nothing more.
+
+Rules:
+- Commit ALL your changes to the current branch with clear commit messages.
+- When done, write PEON_REPORT.md at the repo root covering: what changed, why, how you verified it, open questions. Commit it too.
+- Leave the worktree clean: no uncommitted or untracked files.
+- Do not push. Do not switch branches. Do not touch files outside this worktree.
+
+Task:
+$task
+EOF
+}
+
+run_fake() {
+  local slug="$1" wt="$2" pf="$3"
+  SESSION="fake-$slug"
+  if [ "${PEON_FAKE_FAIL:-0}" = "1" ]; then
+    ( cd "$wt" && echo "half-done" > HALF_DONE.txt )   # simulates a provider dying mid-task
+    return 1
+  fi
+  ( cd "$wt" \
+    && cat "$pf" >> "FAKE_WORK-$slug.txt" \
+    && git add "FAKE_WORK-$slug.txt" && git commit -qm "fake: do task" \
+    && printf '# Peon Report\n\nDid the fake task.\n' > PEON_REPORT.md \
+    && git add PEON_REPORT.md && git commit -qm "fake: report" )
+  if [ "${PEON_FAKE_DIRTY:-0}" = "1" ]; then
+    ( cd "$wt" && echo "oops" > LEFTOVER.txt )         # trips the contract gate
+  fi
+}
+
+cmd_dispatch() {
+  local provider="" task="" repo="$PWD" base="HEAD" slug="" force=0
+  provider="${1:-}"; shift || true
+  task="${1:-}"; shift || true
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo)  [ -n "${2:-}" ] || die "--repo needs a value"; repo="$2"; shift 2 ;;
+      --base)  [ -n "${2:-}" ] || die "--base needs a value"; base="$2"; shift 2 ;;
+      --slug)  [ -n "${2:-}" ] || die "--slug needs a value"; slug="$2"; shift 2 ;;
+      --force) force=1; shift ;;
+      *) die "unknown dispatch option: $1" ;;
+    esac
+  done
+  [ -n "$provider" ] || die "usage: peon dispatch <codex|grok> \"<task>\" [--repo DIR] [--base REF] [--slug NAME] [--force]"
+  [ -n "$task" ] || die "no task given"
+  case "$provider" in
+    codex|grok)
+      [ "${PEON_DRY_RUN:-0}" = "1" ] || command -v "$provider" >/dev/null 2>&1 || die "$provider CLI not installed" ;;
+    fake) : ;;  # test-only provider
+    *) die "unknown provider: $provider (codex|grok)" ;;
+  esac
+  command -v python3 >/dev/null 2>&1 || die "python3 required"
+  [ "$provider" = "grok" ] && { command -v uuidgen >/dev/null 2>&1 || die "uuidgen required for grok"; }
+  repo="$(resolve_repo "$repo")"
+  git -C "$repo" var GIT_AUTHOR_IDENT >/dev/null 2>&1 || die "git author identity not configured in $repo (set user.name and user.email)"
+  [ "$force" -eq 1 ] || require_clean "$repo" "repo $repo"
+  local base_sha
+  base_sha="$(git -C "$repo" rev-parse --verify "$base^{commit}" 2>/dev/null)" || die "cannot resolve base ref: $base"
+  git -C "$repo" cat-file -e "$base_sha:PEON_REPORT.md" 2>/dev/null \
+    && die "repo tracks PEON_REPORT.md at base — it would collide with the peon report artifact; rename it first"
+  [ -n "$slug" ] || slug="$(slugify "$task")"
+  [ -n "$slug" ] || die "could not derive a slug; pass --slug"
+  validate_slug "$slug"
+  local branch="peon/$slug"
+  local wt="$WT_ROOT/$(basename "$repo")-$slug"
+  git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" && die "branch $branch already exists in $repo ('peon scrap $slug' or pick another --slug)"
+  [ -e "$wt" ] && die "worktree path already exists: $wt"
+  mkdir -p "$WT_ROOT" "$LOG_ROOT"
+
+  reserve_slug "$slug"                                   # atomic global reservation
+  trap 'rm -f "$META_ROOT/$slug.json"' EXIT              # release on pre-provider failure
+  git -C "$repo" worktree add -q -b "$branch" "$wt" "$base_sha" || die "git worktree add failed"
+
+  local session=""
+  write_meta                                             # full metadata before the provider runs
+  trap - EXIT                                            # from here on, failures preserve everything for inspection
+
+  local pf="$LOG_ROOT/$slug.prompt.md"
+  dispatch_prompt > "$pf"
+
+  SESSION=""
+  case "$provider" in
+    fake)  run_fake "$slug" "$wt" "$pf" ;;
+    codex) die "codex runner not implemented yet" ;;
+    grok)  die "grok runner not implemented yet" ;;
+  esac
+  require_peon_contract "$wt" "$base_sha"
+  update_meta_session "$slug" "$SESSION"
+
+  echo "peon dispatched: $slug"
+  echo "  provider: $provider  session: $SESSION"
+  echo "  worktree: $wt"
+  echo "  branch:   $branch (base $(git -C "$repo" rev-parse --short "$base_sha"))"
+  echo "review with: peon report $slug"
+}
+
 cmd="${1:-}"
 [ -n "$cmd" ] || { usage >&2; exit 1; }
 shift || true
 
 case "$cmd" in
-  dispatch) die "not implemented yet" ;;
+  dispatch) cmd_dispatch "$@" ;;
   list)     die "not implemented yet" ;;
   report)   die "not implemented yet" ;;
   diff)     die "not implemented yet" ;;
