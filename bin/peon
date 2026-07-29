@@ -181,8 +181,8 @@ cmd_dispatch() {
   SESSION=""
   case "$provider" in
     fake)  run_fake "$slug" "$wt" "$pf" ;;
-    codex) die "codex runner not implemented yet" ;;
-    grok)  die "grok runner not implemented yet" ;;
+    codex) run_codex "$slug" "$wt" "$pf" ;;
+    grok)  run_grok "$slug" "$wt" "$pf" ;;
   esac
   require_peon_contract "$wt" "$base_sha"
   update_meta_session "$slug" "$SESSION"
@@ -301,8 +301,8 @@ cmd_poke() {
   pre="$(git -C "$wt" rev-parse HEAD)"                   # gate ref: the tip BEFORE this poke
   case "$provider" in
     fake)  run_fake_resume "$slug" "$wt" "$pf" ;;
-    codex) die "codex resume not implemented yet" ;;
-    grok)  die "grok resume not implemented yet" ;;
+    codex) run_codex_resume "$slug" "$wt" "$pf" "$session" ;;
+    grok)  run_grok_resume "$slug" "$wt" "$pf" "$session" ;;
     *) die "unknown provider in metadata: $provider" ;;
   esac
   require_peon_contract "$wt" "$pre"
@@ -369,6 +369,101 @@ cmd_scrap() {
   fi
   cleanup_peon "$repo" "$wt" "$slug" -D
   echo "scrapped $slug (worktree, branch, and metadata removed; work discarded)"
+}
+
+dry_run_stub() {  # $1=slug $2=wt, rest=cmdline — record the command; fake work so the contract gate passes
+  local slug="$1" wt="$2"; shift 2
+  printf '%s\n' "$*" >> "$LOG_ROOT/$slug.cmd"
+  ( cd "$wt" \
+    && echo "dry" >> DRY_RUN.txt && git add DRY_RUN.txt && git commit -qm "dry-run" \
+    && printf '# Peon Report\n\ndry run.\n' > PEON_REPORT.md \
+    && git add PEON_REPORT.md && git commit --allow-empty -qm "dry-run report" )
+  SESSION="dry-run"
+}
+
+extract_codex_session() {  # $1=jsonl log — prints session id or exits non-zero (fail closed)
+  python3 - "$1" <<'PYEOF'
+import json, sys
+KEYS = ("session_id", "conversation_id", "thread_id")   # preference order
+found = {k: [] for k in KEYS}
+def walk(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k in KEYS and isinstance(v, str) and v and v not in found[k]:
+                found[k].append(v)
+            walk(v)
+    elif isinstance(o, list):
+        for i in o:
+            walk(i)
+for line in open(sys.argv[1], errors="replace"):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        walk(json.loads(line))
+    except ValueError:
+        continue
+for k in KEYS:
+    if len(found[k]) == 1:
+        print(found[k][0]); sys.exit(0)
+    if len(found[k]) > 1:
+        sys.exit(2)      # ambiguous — refuse to guess
+sys.exit(1)              # none found
+PYEOF
+}
+
+grok_approve_args() {
+  case "$GROK_APPROVE" in
+    mode:*) printf -- '--permission-mode %s' "${GROK_APPROVE#mode:}" ;;
+    always) printf -- '--always-approve' ;;
+    *) die "invalid GROK_APPROVE: '$GROK_APPROVE' (use mode:<m> or always)" ;;
+  esac
+}
+
+run_codex() {
+  local slug="$1" wt="$2" pf="$3" log="$LOG_ROOT/$slug.codex.jsonl"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "codex exec --json -s workspace-write -c approval_policy=never - < $pf"
+    return
+  fi
+  ( cd "$wt" && codex exec --json -s workspace-write -c approval_policy=never - < "$pf" ) \
+    > "$log" 2>"$LOG_ROOT/$slug.codex.err" || die "codex exec failed — see $log"
+  SESSION="$(extract_codex_session "$log")" \
+    || die "could not extract an unambiguous codex session id from $log — poke would be impossible; inspect the log, then scrap or fix extract_codex_session"
+}
+
+run_codex_resume() {
+  local slug="$1" wt="$2" pf="$3" session="$4" log="$LOG_ROOT/$slug.codex.jsonl"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "codex exec resume $session -c sandbox_mode=\"workspace-write\" -c approval_policy=never - < $pf"
+    return
+  fi
+  ( cd "$wt" && codex exec resume "$session" -c sandbox_mode="workspace-write" -c approval_policy=never - < "$pf" ) \
+    >> "$log" 2>>"$LOG_ROOT/$slug.codex.err" || die "codex resume failed — see $log"
+  SESSION="$session"
+}
+
+run_grok() {
+  local slug="$1" wt="$2" pf="$3" log="$LOG_ROOT/$slug.grok.log"
+  SESSION="$(uuidgen | tr 'A-Z' 'a-z')"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "grok -s $SESSION --sandbox workspace $(grok_approve_args) --prompt-file $pf"
+    SESSION="dry-run"
+    return
+  fi
+  ( cd "$wt" && grok -s "$SESSION" --sandbox workspace $(grok_approve_args) --prompt-file "$pf" ) \
+    > "$log" 2>&1 || die "grok failed — see $log"
+}
+
+run_grok_resume() {
+  local slug="$1" wt="$2" pf="$3" session="$4" log="$LOG_ROOT/$slug.grok.log"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "grok --resume $session --sandbox workspace $(grok_approve_args) --prompt-file $pf"
+    return
+  fi
+  ( cd "$wt" && grok --resume "$session" --sandbox workspace $(grok_approve_args) --prompt-file "$pf" ) \
+    >> "$log" 2>&1 || die "grok resume failed — see $log"
+  SESSION="$session"
 }
 
 cmd="${1:-}"

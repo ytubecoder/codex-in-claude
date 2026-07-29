@@ -158,5 +158,30 @@ t  "parallel merge 1"              "$PEON" merge p1
 t  "parallel merge 2"              "$PEON" merge p2
 t  "both tasks landed"             sh -c "grep -q 'task one' '$R3/FAKE_WORK-p1.txt' && grep -q 'task two' '$R3/FAKE_WORK-p2.txt'"
 
+# --- Task 6: real runners (dry-run seam; no provider CLIs needed) ---
+fresh_home
+R="$(mkrepo)"
+export PEON_DRY_RUN=1
+t  "codex dry dispatch ok"         "$PEON" dispatch codex "real task" --repo "$R" --slug cdx
+CMD="$PEON_HOME/logs/cdx.cmd"
+t  "codex cmd captured"            test -f "$CMD"
+t  "codex uses exec --json"        sh -c "grep -q 'codex exec --json' '$CMD'"
+t  "codex workspace-write"         sh -c "grep -q -- '-s workspace-write' '$CMD'"
+t  "codex approval never"          sh -c "grep -q 'approval_policy=never' '$CMD'"
+t  "grok dry dispatch ok"          "$PEON" dispatch grok "real task" --repo "$R" --slug grk
+GCMD="$PEON_HOME/logs/grk.cmd"
+t  "grok sandbox workspace"        sh -c "grep -q -- '--sandbox workspace' '$GCMD'"
+t  "grok default approve mode"     sh -c "grep -q -- '--permission-mode auto' '$GCMD'"
+t  "grok pinned session"           sh -c "grep -qE -- '-s [0-9a-f-]{36}' '$GCMD'"
+t  "grok prompt file"              sh -c "grep -q -- '--prompt-file' '$GCMD'"
+t  "codex poke dry ok"             "$PEON" poke cdx "revise"
+t  "codex resume by session id"    sh -c "grep -q 'codex exec resume dry-run' '$CMD'"
+t  "codex resume sandbox via -c"   sh -c "grep -q 'sandbox_mode=\"workspace-write\"' '$CMD'"
+t  "grok poke dry ok"              "$PEON" poke grk "revise"
+t  "grok resume by session id"     sh -c "grep -q -- '--resume dry-run' '$GCMD'"
+GA="$(GROK_APPROVE=always "$PEON" dispatch grok "x" --repo "$R" --slug grka >/dev/null 2>&1; grep -c -- '--always-approve' "$PEON_HOME/logs/grka.cmd")"
+t  "GROK_APPROVE=always maps flag" test "$GA" -ge 1
+unset PEON_DRY_RUN
+
 echo; echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]
