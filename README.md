@@ -5,6 +5,7 @@
 ![Puts to work: Codex CLI](https://img.shields.io/badge/puts%20to%20work-Codex%20CLI-orange)
 ![Puts to work: Grok CLI](https://img.shields.io/badge/puts%20to%20work-Grok%20CLI-black)
 ![Puts to work: Gemini CLI](https://img.shields.io/badge/puts%20to%20work-Gemini%20CLI-blue)
+![Puts to work: Antigravity CLI](https://img.shields.io/badge/puts%20to%20work-Antigravity%20CLI-4285F4)
 ![deps: bash + git + python3](https://img.shields.io/badge/deps-bash%203.2%2B%20·%20git%20·%20python3-lightgrey)
 
 ```
@@ -21,7 +22,7 @@
 
 > Opinions in. Labor out. Nothing lands without the foreman's review.
 
-Two Claude Code skills that put external CLI agents (Codex, Grok, Gemini) to work *for* Claude instead of alongside it:
+Two Claude Code skills that put external CLI agents (Codex, Grok, Gemini via gemini-cli or Antigravity) to work *for* Claude instead of alongside it:
 
 - **`/plan-check`** pulls **opinions in** — second-opinion plan review, solo or as a parallel "council", with Claude mediating every round.
 - **`/peon-poke`** pushes **labor out** — implementation chores farmed to a "peon" in an isolated git worktree, reviewed and merged by Claude.
@@ -70,7 +71,8 @@ Default is 2 rounds. **Council mode** sends the identical prompt to all reviewer
 |---|---|
 | `/plan-check` | Auto-detects plan files, reviews with Codex |
 | `/plan-check grok` | Reviews with Grok |
-| `/plan-check gemini` | Reviews with Gemini |
+| `/plan-check gemini` | Reviews with Gemini models (routes to `agy` on consumer subscriptions) |
+| `/plan-check agy` | Reviews with Antigravity |
 | `/plan-check council` | Reviews with all reviewers in parallel |
 | `/plan-check path/to/plan.md` | Reviews a specific file |
 | `/plan-check 3` | Runs 3 rounds instead of the default 2 |
@@ -104,7 +106,7 @@ Give Claude an implementation chore to delegate ("have codex build the paginatio
 The mechanics live in `bin/peon` — a dependency-light shell script (git + python3 + uuidgen) any orchestrator can call, not just Claude:
 
 ```
-peon dispatch <codex|grok|gemini> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
+peon dispatch <codex|grok|gemini|agy> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
 peon list | report <slug> | diff <slug>
 peon poke <slug> "<feedback>"
 peon merge <slug> | scrap <slug>
@@ -118,7 +120,8 @@ State lives under `~/.peon/` by default (worktrees, logs, metadata), overridable
 - At least one provider CLI, installed, authenticated, and on `PATH`:
   - [Codex CLI](https://github.com/openai/codex) (`codex`)
   - [Grok Build CLI](https://docs.x.ai/) (`grok`)
-  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`) — sign in with a Google account; Google AI Pro/Ultra subscriptions include 1,500–2,000 requests/day, so peon labor can ride credits you may already pay for
+  - [Antigravity CLI](https://antigravity.google/product/antigravity-cli) (`agy`) — Gemini (plus Claude and GPT-OSS) models on a Google AI Pro/Ultra subscription, so peon labor can ride credits you may already pay for
+  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`gemini`) — enterprise/API-key setups only: Google cut gemini-cli off from consumer accounts (free, AI Pro, Ultra) on 2026-06-18; those subscriptions now go through `agy`
 - For peon-poke: `git`, `python3`, `uuidgen` (all standard on macOS/Linux)
 
 ## Tests

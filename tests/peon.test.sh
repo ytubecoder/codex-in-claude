@@ -222,6 +222,14 @@ t  "gemini no OS sandbox flag"     sh -c "! grep -qE -- '(^| )-s |--sandbox' '$M
 t  "gemini inline prompt"          sh -c "grep -q -- '-p ' '$MCMD'"
 t  "gemini poke dry ok"            "$PEON" poke gmn "revise"
 t  "gemini resume by latest"       sh -c "grep -q -- '--resume latest' '$MCMD'"
+t  "agy dry dispatch ok"           "$PEON" dispatch agy "real task" --repo "$R" --slug agy1
+ACMD="$PEON_HOME/logs/agy1.cmd"
+t  "agy skip-permissions"          sh -c "grep -q -- '--dangerously-skip-permissions' '$ACMD'"
+t  "agy json output"               sh -c "grep -q -- '--output-format json' '$ACMD'"
+t  "agy print timeout raised"      sh -c "grep -q -- '--print-timeout 30m' '$ACMD'"
+t  "agy no sandbox flag"           sh -c "! grep -q -- '--sandbox' '$ACMD'"
+t  "agy poke dry ok"               "$PEON" poke agy1 "revise"
+t  "agy resume by conversation id" sh -c "grep -q -- '--conversation dry-run' '$ACMD'"
 GA="$(GROK_APPROVE=mode:auto "$PEON" dispatch grok "x" --repo "$R" --slug grka >/dev/null 2>&1; grep -c -- '--permission-mode auto' "$PEON_HOME/logs/grka.cmd")"
 t  "GROK_APPROVE=mode:auto maps flag" test "$GA" -ge 1
 

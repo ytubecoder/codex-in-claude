@@ -1,6 +1,6 @@
 ---
 name: plan-check
-description: "Iterative plan review with Codex, Grok, Gemini, or all (council). Trigger phrases: 'get codex to check', 'codex review', 'grok review', 'gemini review', 'what does grok/gemini think', 'ask both', 'ask all three', 'council review', 'second opinion on this plan'. Claude mediates — agrees, pushes back, or negotiates across multiple rounds."
+description: "Iterative plan review with Codex, Grok, Gemini/Antigravity, or all (council). Trigger phrases: 'get codex to check', 'codex review', 'grok review', 'gemini review', 'agy review', 'what does grok/gemini think', 'ask both', 'ask all three', 'council review', 'second opinion on this plan'. Claude mediates — agrees, pushes back, or negotiates across multiple rounds."
 user_invocable: true
 ---
 
@@ -14,10 +14,13 @@ Conversational plan review where Claude acts as mediator. An external reviewer (
 |---|---|---|
 | **Codex** (default) | `codex` | "codex review", "send to codex", nothing provider-specific |
 | **Grok** | `grok` | "grok review", "send to grok", "what does grok think" |
-| **Gemini** | `gemini` | "gemini review", "send to gemini", "what does gemini think" |
+| **Gemini** (enterprise/API-key only) | `gemini` | "gemini review" — but see the routing note below |
+| **Antigravity** (Gemini models via Google AI Pro/Ultra) | `agy` | "agy review", "antigravity review", and usually "gemini review" too |
 | **Council** (all in parallel) | all installed | "ask both", "ask all three", "council review", "all reviewers" |
 
-If a requested CLI is not installed (`command -v codex` / `command -v grok` / `command -v gemini`), say so and offer the others. Council means every installed reviewer unless the user names a subset ("codex and gemini").
+**Gemini routing note:** Google cut `gemini` (gemini-cli) off from consumer accounts — free, AI Pro, and Ultra — on 2026-06-18; it now only serves Gemini Code Assist Standard/Enterprise licenses and API keys. When the user says "gemini" and `agy` is installed, use Antigravity — it runs the same Gemini model family on their subscription. Only use `gemini` directly if the machine actually has a working enterprise/API-key setup. One review = one reviewer: never run both `gemini` and `agy` as separate council members (same models, no independence).
+
+If a requested CLI is not installed (`command -v codex` / `command -v grok` / `command -v agy`), say so and offer the others. Council means every installed reviewer unless the user names a subset ("codex and agy").
 
 ## Trigger Phrases
 
@@ -35,7 +38,8 @@ If a requested CLI is not installed (`command -v codex` / `command -v grok` / `c
 |---|---|
 | `/plan-check` | Auto-detect plan files, review with Codex |
 | `/plan-check grok` | Review with Grok |
-| `/plan-check gemini` | Review with Gemini |
+| `/plan-check gemini` | Review with Gemini models (via `agy` on consumer subscriptions — see routing note) |
+| `/plan-check agy` | Review with Antigravity |
 | `/plan-check council` | Review with all reviewers in parallel |
 | `/plan-check path/to/plan.md` | Review specific file(s) |
 | `/plan-check 3` | Run 3 rounds of review |
@@ -123,6 +127,16 @@ PROMPT_EOF
 
 `--approval-mode plan` is Gemini's read-only mode. Gemini stores sessions per-directory and resumes by recency, not by id — the dedicated `$GEMINI_DIR` guarantees `--resume latest` in rounds 2+ refers to this review and not some other gemini session. Keep `$GEMINI_DIR` for the whole review.
 
+### Antigravity call
+
+```bash
+AGY_OUT=$(agy --mode plan --output-format json --print-timeout 15m -p "$(cat "$PROMPT_FILE")")
+AGY_CONV=$(printf '%s' "$AGY_OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["conversation_id"])')
+printf '%s' "$AGY_OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["response"])'
+```
+
+`--mode plan` is Antigravity's read-only mode. Keep `$AGY_CONV` for the whole review — rounds 2+ resume it by id. Optionally pick a stronger model with `--model` (list with `agy models`, e.g. `gemini-3.1-pro-high`).
+
 ### Council: run reviewers in parallel
 
 Reviewers are independent processes — launch them concurrently (background both and `wait`, or parallel tool calls). Wall time is the slowest reviewer, not the sum. Send each reviewer the **identical** review prompt. Never include one reviewer's output in another's round-1 prompt — independent takes are the whole point.
@@ -133,7 +147,7 @@ $REVIEW_PROMPT
 PROMPT_EOF
 } &
 grok -s "$GROK_SESSION" --sandbox read-only --prompt-file "$PROMPT_FILE" > "$WORKDIR/grok-review.md" 2>&1 &
-( cd "$GEMINI_DIR" && gemini --approval-mode plan -p "$(cat "$PROMPT_FILE")" ) > "$WORKDIR/gemini-review.md" 2>&1 &
+agy --mode plan --output-format json --print-timeout 15m -p "$(cat "$PROMPT_FILE")" > "$WORKDIR/agy-review.json" 2>&1 &
 wait
 ```
 
@@ -208,6 +222,14 @@ PROMPT_EOF
 ```
 
 If `$GEMINI_DIR` was lost (fresh shell), there is no reliable resume — start a fresh session in a new temp dir and restate the agreed/contested items in the prompt.
+
+### Antigravity follow-up
+
+```bash
+agy --conversation "$AGY_CONV" --mode plan --output-format json --print-timeout 15m -p "$(cat "$PROMPT_FILE")"
+```
+
+Extract `response` from the JSON as in round 1. The conversation id is stable across rounds.
 
 **Council cross-examination (escalation only):** reviewers never talk to each other directly. But when they directly contradict each other on a specific point, Claude may relay the substance of one reviewer's argument into the other's follow-up prompt ("another reviewer argues X because Y — does that change your position?") and let each respond in its own session. Use this only for genuine conflicts, not for consensus items.
 

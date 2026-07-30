@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # peon — dispatch implementation tasks to external CLI agents in isolated git worktrees.
-# Providers: codex, grok, gemini (and 'fake' for tests). See skills/peon-poke/SKILL.md for workflow.
+# Providers: codex, grok, gemini, agy (and 'fake' for tests). See skills/peon-poke/SKILL.md for workflow.
+# agy = Antigravity CLI, the consumer-subscription successor to gemini-cli (Google cut
+# gemini-cli off from AI Pro/Ultra/free accounts on 2026-06-18; gemini remains for
+# Code Assist Standard/Enterprise and API-key users).
 set -euo pipefail
 umask 077   # prompts and transcripts under ~/.peon can contain task/model content — keep them private
 
@@ -20,7 +23,7 @@ usage() {
 peon — farm implementation tasks out to external CLI agents in isolated git worktrees
 
 Usage:
-  peon dispatch <codex|grok|gemini> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
+  peon dispatch <codex|grok|gemini|agy> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
   peon list [--repo DIR]
   peon report <slug>
   peon diff <slug>
@@ -150,13 +153,13 @@ cmd_dispatch() {
       *) die "unknown dispatch option: $1" ;;
     esac
   done
-  [ -n "$provider" ] || die "usage: peon dispatch <codex|grok|gemini> \"<task>\" [--repo DIR] [--base REF] [--slug NAME] [--force]"
+  [ -n "$provider" ] || die "usage: peon dispatch <codex|grok|gemini|agy> \"<task>\" [--repo DIR] [--base REF] [--slug NAME] [--force]"
   [ -n "$task" ] || die "no task given"
   case "$provider" in
-    codex|grok|gemini)
+    codex|grok|gemini|agy)
       [ "${PEON_DRY_RUN:-0}" = "1" ] || command -v "$provider" >/dev/null 2>&1 || die "$provider CLI not installed" ;;
     fake) : ;;  # test-only provider
-    *) die "unknown provider: $provider (codex|grok|gemini)" ;;
+    *) die "unknown provider: $provider (codex|grok|gemini|agy)" ;;
   esac
   command -v python3 >/dev/null 2>&1 || die "python3 required"
   [ "$provider" = "grok" ] && { command -v uuidgen >/dev/null 2>&1 || die "uuidgen required for grok"; }
@@ -193,6 +196,7 @@ cmd_dispatch() {
     codex)  run_codex "$slug" "$wt" "$pf" ;;
     grok)   run_grok "$slug" "$wt" "$pf" ;;
     gemini) run_gemini "$slug" "$wt" "$pf" ;;
+    agy)    run_agy "$slug" "$wt" "$pf" ;;
   esac
   require_peon_contract "$wt" "$base_sha"
   update_meta_session "$slug" "$SESSION"
@@ -323,13 +327,20 @@ cmd_poke() {
   mkdir -p "$LOG_ROOT"
   poke_prompt > "$pf"
   pre="$(git -C "$wt" rev-parse HEAD)"                   # gate ref: the tip BEFORE this poke
+  SESSION=""
   case "$provider" in
     fake)   run_fake_resume "$slug" "$wt" "$pf" ;;
     codex)  run_codex_resume "$slug" "$wt" "$pf" "$session" ;;
     grok)   run_grok_resume "$slug" "$wt" "$pf" "$session" ;;
     gemini) run_gemini_resume "$slug" "$wt" "$pf" "$session" ;;
+    agy)    run_agy_resume "$slug" "$wt" "$pf" "$session" ;;
     *) die "unknown provider in metadata: $provider" ;;
   esac
+  # agy can rotate conversation ids on resume — persist the chain head BEFORE the gate,
+  # so even a gate-tripping poke resumes from the right context next time.
+  if [ -n "$SESSION" ] && [ "$SESSION" != "$session" ]; then
+    update_meta_session "$slug" "$SESSION"
+  fi
   require_peon_contract "$wt" "$pre"
   echo "poked $slug — review with: peon report $slug"
 }
@@ -525,6 +536,64 @@ run_gemini_resume() {
   ( cd "$wt" && gemini --resume latest --approval-mode yolo -p "$(cat "$pf")" ) \
     >> "$log" 2>&1 || die "gemini resume failed — see $log"
   SESSION="$session"
+}
+
+extract_agy_conversation() {  # $1=json log — prints the LAST doc's conversation_id or exits non-zero (fail closed)
+  # The log accumulates one JSON document per run (dispatch + each poke). agy can mint a
+  # NEW conversation_id on resume (observed live 2026-07-30), so the chain head is always
+  # the last document — resuming an older id would silently drop later pokes' context.
+  python3 - "$1" <<'PYEOF'
+import json, sys
+buf = open(sys.argv[1], errors="replace").read()
+dec = json.JSONDecoder()
+idx, last = 0, None
+while idx < len(buf):
+    while idx < len(buf) and buf[idx] in " \t\r\n":
+        idx += 1
+    if idx >= len(buf):
+        break
+    try:
+        obj, idx = dec.raw_decode(buf, idx)
+    except ValueError:
+        break
+    last = obj
+if not isinstance(last, dict):
+    sys.exit(1)
+cid = last.get("conversation_id")
+if not isinstance(cid, str) or not cid:
+    sys.exit(1)
+if last.get("status") != "SUCCESS":
+    sys.exit(2)   # run reported failure — don't record a session for it
+print(cid)
+PYEOF
+}
+
+# Antigravity: --dangerously-skip-permissions is the only mode that lets a headless
+# peon run tools and commit. No --sandbox (same linked-worktree git-dir problem as
+# gemini). JSON output carries conversation_id — extracted fail-closed, resumed by id
+# like codex. --print-timeout raised from the 5m default, which would kill real tasks.
+run_agy() {
+  local slug="$1" wt="$2" pf="$3" log="$LOG_ROOT/$slug.agy.json"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "agy --dangerously-skip-permissions --output-format json --print-timeout 30m -p \"\$(cat $pf)\""
+    return
+  fi
+  ( cd "$wt" && agy --dangerously-skip-permissions --output-format json --print-timeout 30m -p "$(cat "$pf")" ) \
+    > "$log" 2>"$LOG_ROOT/$slug.agy.err" || die "agy failed — see $log"
+  SESSION="$(extract_agy_conversation "$log")" \
+    || die "no usable conversation_id in $log (missing id or status != SUCCESS) — inspect the log, then scrap or re-dispatch"
+}
+
+run_agy_resume() {
+  local slug="$1" wt="$2" pf="$3" session="$4" log="$LOG_ROOT/$slug.agy.json"
+  if [ "${PEON_DRY_RUN:-0}" = "1" ]; then
+    dry_run_stub "$slug" "$wt" "agy --conversation $session --dangerously-skip-permissions --output-format json --print-timeout 30m -p \"\$(cat $pf)\""
+    return
+  fi
+  ( cd "$wt" && agy --conversation "$session" --dangerously-skip-permissions --output-format json --print-timeout 30m -p "$(cat "$pf")" ) \
+    >> "$log" 2>>"$LOG_ROOT/$slug.agy.err" || die "agy resume failed — see $log"
+  SESSION="$(extract_agy_conversation "$log")" \
+    || die "agy resume produced no usable conversation_id (see $log) — the worktree holds whatever happened"
 }
 
 cmd="${1:-}"
