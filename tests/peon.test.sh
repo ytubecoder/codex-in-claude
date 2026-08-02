@@ -287,5 +287,56 @@ t  "merge --unchecked bypasses"    "$PEON" merge offscope --unchecked
 t  "check without gates passes"    "$PEON" check ungated
 t  "ungated merge unaffected"      "$PEON" merge ungated
 
+# late-declared contract: a check-time --verify with nothing recorded at dispatch
+# persists to metadata, so merge enforces it (otherwise the gate would evaporate)
+"$PEON" dispatch fake "late gates" --repo "$R" --slug lategate >/dev/null 2>&1
+t  "late verify recorded via check"  "$PEON" check lategate --verify true
+t  "meta has late verify"            sh -c "grep -qF '\"verify\": \"true\"' '$PEON_HOME/meta/lategate.json'"
+t  "poke stales late verify"         "$PEON" poke lategate "tweak"
+tf "merge enforces late verify"      "$PEON" merge lategate
+t  "re-check then merge lands"       sh -c "'$PEON' check lategate && '$PEON' merge lategate"
+# a contract recorded at dispatch is NOT silently replaced by a one-off override
+"$PEON" dispatch fake "sticky contract" --repo "$R" --slug sticky --verify true >/dev/null 2>&1
+tf "one-off override still runs"     "$PEON" check sticky --verify false
+t  "recorded verify unchanged"       sh -c "grep -qF '\"verify\": \"true\"' '$PEON_HOME/meta/sticky.json'"
+t  "recheck restores + merge lands"  sh -c "'$PEON' check sticky && '$PEON' merge sticky"
+
+# --- Task 8: sandbox-blocked commits (exit 3, session survives, adopt) ---
+fresh_home
+R8="$(mkrepo)"
+env PEON_FAKE_NOCOMMIT=1 "$PEON" dispatch fake "sandboxed grok-style work" --repo "$R8" --slug sbx >/dev/null 2>&1
+RC=$?
+t  "contract violation exits 3"    test "$RC" -eq 3
+WT8="$PEON_HOME/worktrees/$(basename "$R8")-sbx"
+t  "work + report preserved"       sh -c "test -f '$WT8/PEON_REPORT.md' && test -f '$WT8/FAKE_WORK-sbx.txt'"
+t  "session persisted pre-gate"    sh -c "grep -q '\"session\": \"fake-sbx\"' '$PEON_HOME/meta/sbx.json'"
+t  "violation hints at adopt"      sh -c "env PEON_FAKE_NOCOMMIT=1 '$PEON' dispatch fake x --repo '$R8' --slug sbxh 2>&1 | grep -q 'peon adopt sbxh'"
+"$PEON" scrap sbxh >/dev/null 2>&1
+tf "merge refuses unadopted work"  "$PEON" merge sbx
+t  "adopt commits the work"        "$PEON" adopt sbx
+t  "adopted tree is clean"         sh -c "test -z \"\$(git -C '$WT8' status --porcelain)\""
+t  "adopt satisfies contract"      sh -c "git -C '$WT8' cat-file -e HEAD:PEON_REPORT.md"
+t  "adopt commit credits foreman"  sh -c "git -C '$WT8' log -1 --pretty=%s | grep -q 'foreman adopt'"
+tf "adopt refuses clean worktree"  "$PEON" adopt sbx
+t  "poke works after adopt"        "$PEON" poke sbx "tweak it"
+t  "merge lands adopted work"      "$PEON" merge sbx
+# adopt must refuse when there is no report on disk (half-done provider death)
+env PEON_FAKE_FAIL=1 "$PEON" dispatch fake "doomed again" --repo "$R8" --slug sbx2 >/dev/null 2>&1
+tf "adopt refuses missing report"  "$PEON" adopt sbx2
+"$PEON" scrap sbx2 >/dev/null 2>&1
+
+# merge subject: byte truncation must not cut a multibyte char (invalid UTF-8)
+R9="$(mkrepo)"
+LONGTASK="$(python3 -c 'print("x"*59 + "é" + " trailing words beyond the sixty character cut point")')"
+"$PEON" dispatch fake "$LONGTASK" --repo "$R9" --slug utf8 >/dev/null 2>&1
+t  "merge with multibyte task ok"  "$PEON" merge utf8
+t  "merge subject is valid UTF-8"  sh -c "git -C '$R9' log -1 --pretty=%s | python3 -c 'import sys; sys.stdin.buffer.read().decode(\"utf-8\")'"
+
+# color-forcing env vars are stripped for provider + verify runs (forced ANSI
+# codes fake failures in text-matching test helpers)
+R10="$(mkrepo)"
+"$PEON" dispatch fake "color safe" --repo "$R10" --slug colorsafe --verify 'test -z "${CLICOLOR_FORCE:-}${FORCE_COLOR:-}"' >/dev/null 2>&1
+t  "verify env strips CLICOLOR_FORCE" env CLICOLOR_FORCE=1 FORCE_COLOR=1 "$PEON" check colorsafe
+
 echo; echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]

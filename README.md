@@ -85,6 +85,8 @@ Modifiers combine: `/plan-check council 3 docs/plan.md`. Trigger phrases work to
 
 Give Claude an implementation chore to delegate ("have codex build the pagination", "farm the test backfill out to grok") and it dispatches a peon: an isolated git worktree on a `peon/<slug>` branch where the provider CLI works with write access, commits its changes, and files a `PEON_REPORT.md`. Nothing reaches your working tree without review and an explicit merge.
 
+The trust model throughout: everything the peon *says* — report prose, pasted test output — is advisory. The gates that decide (contract, file scope, verify) are computed foreman-side from git facts and foreman-run commands, so delegation saves tokens without taking the worker's word for anything.
+
 ```
   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
   │ DISPATCH │───▶│   WORK   │───▶│  REPORT  │───▶│  REVIEW  │───▶│  MERGE   │
@@ -99,7 +101,7 @@ Give Claude an implementation chore to delegate ("have codex build the paginatio
 | **1. Scope** | Claude tightens the chore into one well-defined task with acceptance criteria and file paths. Peons execute; they don't design. | Task is unambiguous |
 | **2. Dispatch** | `peon dispatch codex "<task>"` creates the worktree and branch, then runs the provider inside it. | Clean repo, or explicit `--force` |
 | **3. Work** | The peon implements, commits, and files `PEON_REPORT.md`. | **Contract gate:** commits made + report committed + clean tree. Violations fail loudly, worktree preserved for inspection |
-| **4. Review** | Classic: `peon report <slug>`, then `peon diff <slug>` — judged like a code review. Or **black-box acceptance** for spec-driven work: `peon check <slug>` runs contract + file-scope + verify gates foreman-side; the foreman reads only the tests and runs independent probes, never the full diff ([docs/BLACKBOX-ACCEPTANCE.md](docs/BLACKBOX-ACCEPTANCE.md)). | Full-diff read, or the complete gate set — never neither |
+| **4. Review** | Classic: `peon report <slug>`, then `peon diff <slug>` — judged like a code review. **Black-box acceptance** for spec-driven work: `peon check <slug>` runs contract + file-scope + verify gates foreman-side; the foreman reads only the tests and runs independent probes, never the full diff. Or **spot review** for mid-size self-tested chores: foreman-run verify + diffstat + load-bearing hunks only ([docs/BLACKBOX-ACCEPTANCE.md](docs/BLACKBOX-ACCEPTANCE.md)). | One full treatment per merge — never none |
 | **5. Poke** ⟲ | `peon poke <slug> "<feedback>"` resumes the same provider session for revisions. Repeat until right. | No-op revision rounds fail loudly |
 | **6. Merge** | `peon merge <slug>` lands it on your branch, strips the report, cleans up. `peon scrap` discards. | Nothing auto-lands, ever |
 
@@ -111,9 +113,12 @@ peon dispatch <codex|grok|gemini|agy> "<task>" [--repo DIR] [--base REF] [--slug
 peon list | report <slug> | diff <slug> [--stat|--files]   # report includes provider-reported token usage
 
 peon check <slug>              # contract + scope + foreman-run verify, recorded vs branch tip
+peon adopt <slug> [-m "msg"]   # foreman-commit work a sandbox-blocked provider left uncommitted
 peon poke <slug> "<feedback>"
 peon merge <slug> [--unchecked] | scrap <slug>
 ```
+
+Exit codes are orchestrator-friendly: `1` means the dispatch itself was wrong (usage, environment, provider error); `3` means the *peon* broke its contract, with worktree and metadata preserved for inspection. Some provider sandboxes can't run `git` in a linked worktree at all (grok): the peon finishes the work and the report but can't commit, dispatch exits 3, and `peon adopt` foreman-commits it on the peon branch — an expected path, not a crash. Review still decides the merge.
 
 State lives under `~/.peon/` by default (worktrees, logs, metadata), overridable via `PEON_HOME` — never inside your repo.
 

@@ -21,8 +21,9 @@ Use black-box acceptance when ALL of these hold:
 - You can enumerate the files the peon may touch (an allowlist).
 
 Otherwise use the classic flow: `peon report` + full `peon diff`, judged like
-a code review. Small chores are cheaper to read than to spec. **Every merge
-gets one of the two treatments — never neither.**
+a code review. Small chores are cheaper to read than to spec. For the middle
+ground — too big to read 1:1, too small to spec — see the **Spot review**
+variant at the bottom. **Every merge gets one of the treatments — never none.**
 
 ## The method
 
@@ -125,3 +126,21 @@ classic full-diff flow.
   proves they fail red on the base ref, locks them read-only, and the peon's
   task is "make these pass". Stronger assurance, higher foreman cost. Shares
   this tooling (`--verify`, `check`, merge gates); adds path-locking.
+
+- **Spot review** (token-lean middle tier; field-proven 3× on 2026-08-02):
+  for mid-size chores where a full spec is overkill but a 1:1 diff read is
+  waste. The brief makes the peon a *self-tested work unit*: "add the
+  mandated tests, run them plus the full suite, paste BOTH actual outputs
+  into PEON_REPORT.md" — and include the no-escape rule: if the sandbox
+  blocks `git commit`, leave the tree + report as-is and say so; the foreman
+  commits (`peon adopt`). Mandating self-testing improves the work product,
+  but the pasted outputs are *triage, not trust*: self-reports are the
+  weakest evidence class — frontier models demonstrably game their own
+  checks (METR's reward-hacking findings), and an orchestrator that accepts
+  "tests: pass" strings verifies protocol compliance, not truth. The gate is
+  the foreman-run verify: `peon check <slug> --verify "<suite>"` (persisted
+  as the contract if none was recorded at dispatch, so `merge` enforces it).
+  Review = report + `peon diff --stat` + reading only the load-bearing hunks
+  (interfaces, error paths, anything the suite can't see). No allowlist or
+  independent probes mandated — that's the trade vs full black-box. If the
+  diffstat surprises you, escalate to a stronger treatment.

@@ -7,6 +7,12 @@
 set -euo pipefail
 umask 077   # prompts and transcripts under ~/.peon can contain task/model content — keep them private
 
+# Agent harnesses export color-forcing vars (Claude Code's Bash tool sets CLICOLOR_FORCE=1);
+# forced ANSI codes leak into peon-run test output and the recorded verify gate, faking
+# failures in text-matching helpers (observed live 2026-08-02). Everything peon spawns —
+# provider CLIs and verify commands — must see a clean environment.
+unset CLICOLOR_FORCE FORCE_COLOR CLICOLOR
+
 PEON_HOME="${PEON_HOME:-$HOME/.peon}"
 WT_ROOT="$PEON_HOME/worktrees"
 LOG_ROOT="$PEON_HOME/logs"
@@ -17,6 +23,11 @@ META_ROOT="$PEON_HOME/meta"
 GROK_APPROVE="${GROK_APPROVE:-always}"
 
 die() { echo "peon: $*" >&2; exit 1; }
+
+# Contract violations exit 3 (vs 1 for usage/environment/provider errors) so an
+# orchestrator can tell "peon broke its contract, worktree preserved" from "the
+# dispatch itself was wrong" without grepping stderr.
+die_contract() { echo "peon: $*" >&2; exit 3; }
 
 usage() {
   cat <<'EOF'
@@ -29,6 +40,7 @@ Usage:
   peon report <slug>
   peon diff <slug> [--stat|--files]
   peon check <slug> [--allow "glob[,glob...]"] [--verify "cmd"]
+  peon adopt <slug> [-m "message"]
   peon poke <slug> "<feedback>"
   peon merge <slug> [--into BRANCH] [--unchecked]  # --into asserts the branch already checked out; peon never switches your branch
   peon scrap <slug>
@@ -43,6 +55,14 @@ dispatch (--allow file-scope globs, --verify test command), then 'peon check'
 runs the mechanical gates foreman-side — contract, scope, verify — and records
 the verify result against the branch tip. 'peon merge' refuses out-of-scope
 files and stale/failed/missing verify runs unless --unchecked is passed.
+
+Sandbox-blocked commits: some provider sandboxes cannot run git in a linked
+worktree (grok). The peon then leaves its work + PEON_REPORT.md on disk
+uncommitted and dispatch/poke exits 3 — an expected path, not a crash.
+Review, then 'peon adopt <slug>' to foreman-commit on the peon branch.
+
+Exit codes: 0 ok · 1 usage/environment/provider error · 3 peon contract
+violation (worktree and metadata always preserved for inspection).
 EOF
 }
 
@@ -72,13 +92,21 @@ require_clean() {
 }
 
 require_peon_contract() {
-  local wt="$1" since="$2"
-  [ "$(git -C "$wt" rev-list --count "$since..HEAD")" -ge 1 ] \
-    || die "peon contract violation: no commits since $since — worktree preserved at $wt ('peon report'/'peon scrap')"
+  local wt="$1" since="$2" slug="$3"
+  if [ "$(git -C "$wt" rev-list --count "$since..HEAD")" -lt 1 ]; then
+    local hint=""
+    # Sandbox-blocked-commit signature: real work + report on disk, nothing committed.
+    # Grok's sandbox cannot write a linked worktree's gitdir (it lives under the main
+    # repo's .git/worktrees/, outside the sandbox boundary) — the sanctioned recovery
+    # is review-then-adopt, never hand-rolled git or a re-dispatch.
+    [ -f "$wt/PEON_REPORT.md" ] && [ -n "$(git -C "$wt" status --porcelain)" ] \
+      && hint=" Work + PEON_REPORT.md are on disk uncommitted — the provider sandbox likely blocked git; review, then 'peon adopt $slug'."
+    die_contract "peon contract violation: no commits since $since — worktree preserved at $wt ('peon report $slug'/'peon scrap $slug').$hint"
+  fi
   git -C "$wt" cat-file -e "HEAD:PEON_REPORT.md" 2>/dev/null \
-    || die "peon contract violation: PEON_REPORT.md not committed — worktree preserved at $wt"
+    || die_contract "peon contract violation: PEON_REPORT.md not committed — worktree preserved at $wt"
   [ -z "$(git -C "$wt" status --porcelain)" ] \
-    || die "peon contract violation: uncommitted changes left behind — worktree preserved at $wt"
+    || die_contract "peon contract violation: uncommitted changes left behind — worktree preserved at $wt ('peon poke $slug' to have them committed, or 'peon adopt $slug' to foreman-commit)"
 }
 
 reserve_slug() {
@@ -138,8 +166,10 @@ You are a "peon": an autonomous implementation agent working in an isolated git 
 Rules:
 - Commit ALL your changes to the current branch with clear commit messages.
 - When done, write PEON_REPORT.md at the repo root covering: what changed, why, how you verified it, open questions. Commit it too.
+- In PEON_REPORT.md, paste the ACTUAL terminal output of your verification commands (test runs, builds) — not a paraphrase of it.
 - Leave the worktree clean: no uncommitted or untracked files.
 - Do not push. Do not switch branches. Do not touch files outside this worktree.
+- If git commit fails because your sandbox blocks it, STOP: leave your changes and PEON_REPORT.md as plain files in the worktree and state what happened in the report. Never work around a blocked commit — no new .git directories, no remotes, no pushes. The foreman will commit for you.
 
 Task:
 $task
@@ -152,6 +182,14 @@ run_fake() {
   if [ "${PEON_FAKE_FAIL:-0}" = "1" ]; then
     ( cd "$wt" && echo "half-done" > HALF_DONE.txt )   # simulates a provider dying mid-task
     return 1
+  fi
+  if [ "${PEON_FAKE_NOCOMMIT:-0}" = "1" ]; then
+    # simulates a sandbox-blocked provider (grok in a linked worktree): real work +
+    # report on disk, nothing committed, the provider itself exits 0
+    ( cd "$wt" \
+      && cat "$pf" >> "FAKE_WORK-$slug.txt" \
+      && printf '# Peon Report\n\nDid the task; git commit was blocked by my sandbox.\n' > PEON_REPORT.md )
+    return 0
   fi
   ( cd "$wt" \
     && cat "$pf" >> "FAKE_WORK-$slug.txt" \
@@ -223,8 +261,11 @@ cmd_dispatch() {
     gemini) run_gemini "$slug" "$wt" "$pf" ;;
     agy)    run_agy "$slug" "$wt" "$pf" ;;
   esac
-  require_peon_contract "$wt" "$base_sha"
+  # Session persists BEFORE the contract gate: a sandbox-blocked provider (grok in
+  # linked worktrees) trips the gate with real work on disk, and the recovery path
+  # (adopt, then poke rounds) needs the session id to still be addressable.
   update_meta_session "$slug" "$SESSION"
+  require_peon_contract "$wt" "$base_sha" "$slug"
 
   echo "peon dispatched: $slug"
   echo "  provider: $provider  session: $SESSION"
@@ -470,6 +511,19 @@ cmd_check() {
   [ "$have_allow" -eq 1 ]  || allow="$(meta_get "$slug" allow 2>/dev/null || true)"
   [ "$have_verify" -eq 1 ] || verify="$(meta_get "$slug" verify 2>/dev/null || true)"
 
+  # Overrides stay one-off experiments when a contract is already recorded, but a
+  # LATE-DECLARED contract (nothing recorded at dispatch) persists to metadata —
+  # otherwise a verify added at check time would never be enforced by merge, and
+  # the whole gate would silently evaporate at the moment it matters.
+  if [ "$have_allow" -eq 1 ] && [ -z "$(meta_get "$slug" allow 2>/dev/null || true)" ]; then
+    update_meta_field "$slug" allow "$allow"
+    echo "recorded allowlist to metadata (none was set at dispatch) — merge will enforce it"
+  fi
+  if [ "$have_verify" -eq 1 ] && [ -z "$(meta_get "$slug" verify 2>/dev/null || true)" ]; then
+    update_meta_field "$slug" verify "$verify"
+    echo "recorded verify command to metadata (none was set at dispatch) — merge will enforce it"
+  fi
+
   echo "== peon check: $slug =="
 
   # Contract — same invariants the dispatch/poke gate enforces, re-checked now.
@@ -542,7 +596,7 @@ Revision request from your reviewer on the work you already did in this worktree
 
 $feedback
 
-Apply the requested changes and commit them to the current branch. Update PEON_REPORT.md to reflect the revision and commit that too. Same rules as before: leave the worktree clean, do not push, do not switch branches.
+Apply the requested changes and commit them to the current branch. Update PEON_REPORT.md to reflect the revision and commit that too. Same rules as before: leave the worktree clean, do not push, do not switch branches, paste actual verification output into the report. If your sandbox blocks git commit, leave the changes and the updated report uncommitted and note it in the report — the foreman will commit.
 EOF
 }
 
@@ -584,8 +638,40 @@ cmd_poke() {
   if [ -n "$SESSION" ] && [ "$SESSION" != "$session" ]; then
     update_meta_session "$slug" "$SESSION"
   fi
-  require_peon_contract "$wt" "$pre"
+  require_peon_contract "$wt" "$pre" "$slug"
   echo "poked $slug — review with: peon report $slug"
+}
+
+cmd_adopt() {
+  # Recovery for sandbox-blocked commits (grok in linked worktrees): the provider did
+  # the work and wrote PEON_REPORT.md but could not run git, so dispatch/poke exited 3
+  # with everything preserved on disk. The foreman adopts: commit the lot on the peon
+  # branch and re-run the contract gate. Adoption is mechanics, NOT acceptance — the
+  # review treatment (check / diff / probes) still decides the merge.
+  local slug="${1:-}"; [ -n "$slug" ] || die "usage: peon adopt <slug> [-m \"message\"]"
+  shift || true
+  local msg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -m) [ -n "${2:-}" ] || die "-m needs a value"; msg="$2"; shift 2 ;;
+      *) die "unknown adopt option: $1" ;;
+    esac
+  done
+  local wt provider base_sha
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  provider="$(meta_get "$slug" provider)"
+  base_sha="$(meta_get "$slug" base_sha)"
+  [ -n "$(git -C "$wt" status --porcelain)" ] \
+    || die "nothing to adopt — worktree is clean ('peon report $slug')"
+  [ -f "$wt/PEON_REPORT.md" ] \
+    || die "refusing to adopt without PEON_REPORT.md on disk — the report is part of the contract; 'peon poke $slug' to demand it, or 'peon scrap $slug'"
+  [ -n "$msg" ] || msg="foreman adopt: commit $provider peon work (provider sandbox could not run git)"
+  git -C "$wt" add -A
+  git -C "$wt" commit -qm "$msg"
+  require_peon_contract "$wt" "$base_sha" "$slug"
+  echo "adopted $slug — foreman-committed the peon's work on peon/$slug"
+  echo "review next: peon report $slug · peon check $slug · peon diff $slug --stat"
 }
 
 cleanup_peon() {
@@ -662,7 +748,11 @@ $(printf '%s\n' "$viol" | sed 's/^/  /')
   if ! git -C "$repo" cat-file -e "$pre_head:PEON_REPORT.md" 2>/dev/null; then
     git -C "$repo" rm -qf PEON_REPORT.md 2>/dev/null || true   # review artifact, not product code
   fi
-  git -C "$repo" commit -qm "merge peon/$slug: $(printf '%.60s' "$task")"
+  # Truncate the subject in python: bash printf %.60s counts BYTES and can cut a
+  # multibyte char in half, committing an invalid-UTF-8 subject (bit live 2026-08-02).
+  local subject
+  subject="$(python3 -c 'import sys; print(" ".join(sys.argv[1].split())[:60])' "$task")"
+  git -C "$repo" commit -qm "merge peon/$slug: $subject"
   cleanup_peon "$repo" "$wt" "$slug" -d
   echo "merged $branch into $(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo HEAD) and cleaned up"
 }
@@ -875,6 +965,7 @@ case "$cmd" in
   report)   cmd_report "$@" ;;
   diff)     cmd_diff "$@" ;;
   check)    cmd_check "$@" ;;
+  adopt)    cmd_adopt "$@" ;;
   poke)     cmd_poke "$@" ;;
   merge)    cmd_merge "$@" ;;
   scrap)    cmd_scrap "$@" ;;
