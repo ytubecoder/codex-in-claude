@@ -101,9 +101,22 @@ The trust model throughout: everything the peon *says* — report prose, pasted 
 | **1. Scope** | Claude tightens the chore into one well-defined task with acceptance criteria and file paths. Peons execute; they don't design. | Task is unambiguous |
 | **2. Dispatch** | `peon dispatch codex "<task>"` creates the worktree and branch, then runs the provider inside it. | Clean repo, or explicit `--force` |
 | **3. Work** | The peon implements, commits, and files `PEON_REPORT.md`. | **Contract gate:** commits made + report committed + clean tree. Violations fail loudly, worktree preserved for inspection |
-| **4. Review** | Classic: `peon report <slug>`, then `peon diff <slug>` — judged like a code review. **Black-box acceptance** for spec-driven work: `peon check <slug>` runs contract + file-scope + verify gates foreman-side; the foreman reads only the tests and runs independent probes, never the full diff. Or **spot review** for mid-size self-tested chores: foreman-run verify + diffstat + load-bearing hunks only ([docs/BLACKBOX-ACCEPTANCE.md](docs/BLACKBOX-ACCEPTANCE.md)). | One full treatment per merge — never none |
+| **4. Review** | One of four treatments, picked by size and risk — classic full-diff read, spot review, black-box acceptance, or test-gated dispatch (table below). | One full treatment per merge — never none |
 | **5. Poke** ⟲ | `peon poke <slug> "<feedback>"` resumes the same provider session for revisions. Repeat until right. | No-op revision rounds fail loudly |
 | **6. Merge** | `peon merge <slug>` lands it on your branch, strips the report, cleans up. `peon scrap` discards. | Nothing auto-lands, ever |
+
+### The four review treatments
+
+The economics of farming work out live or die on acceptance cost, so the treatment scales with the task instead of being one-size-fits-all. Whatever you pick, the peon's own words are never the gate — the mechanical gates are.
+
+| Treatment | For | What the orchestrator spends |
+|---|---|---|
+| **Classic** — read the full diff | small chores; style/architecture is the point | reading the whole diff |
+| **Spot** — foreman-run verify + diffstat + load-bearing hunks | mid-size self-tested chores | a few hunks |
+| **Black-box** — spec + `--allow`/`--verify`, `check`, test audit, independent probes | large spec-driven features | writing the spec; reading only the tests |
+| **Test-gated** — foreman authors failing tests; the peon's task is "make these green" | high-risk work (auth, billing, migrations) | writing the tests themselves |
+
+Test-gated dispatch needs no extra flags: commit the tests, run the verify once to prove them red on base, then dispatch with `--verify` pointing at them and an `--allow` that *excludes* the test paths — any peon edit to a test file is then a scope violation, which is the read-only lock. Full detail on the last three: [docs/BLACKBOX-ACCEPTANCE.md](docs/BLACKBOX-ACCEPTANCE.md).
 
 The mechanics live in `bin/peon` — a dependency-light shell script (git + python3 + uuidgen) any orchestrator can call, not just Claude:
 
