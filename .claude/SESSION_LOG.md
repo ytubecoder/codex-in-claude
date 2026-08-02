@@ -1,5 +1,21 @@
 # Session Log
 
+## 2026-08-02 — Black-box acceptance codified: recorded contracts, peon check, gated merge, usage line
+
+### Summary
+- Codified the field-proven black-box acceptance method (same-day farm-out: ~1,500-line 11-file feature, zero pokes, foreman never read the implementation diff) into `docs/BLACKBOX-ACCEPTANCE.md` and the tooling: `peon dispatch --allow/--verify` records the acceptance contract in meta; new `peon check` runs contract + scope + foreman-side verify (result bound to the branch tip sha, invalidated by pokes); `peon merge` refuses out-of-scope files and failed/stale/never-run verify (`--unchecked` bypasses loudly); `peon diff` grew `--stat`/`--files` and now rejects unknown options (previously swallowed them and dumped the full diff — the exact 1:1-read trap).
+- `peon report` gained a provider-self-reported token usage line parsed from logs already on disk (codex JSONL run-final banking; agy per-doc; grok/gemini → `n/a`).
+- 27 new tests (144 total green); SKILL.md now forces choosing the review mode BEFORE dispatch.
+
+### Lessons Learned
+- **Accepted:** trust moves off the returned code onto evidence the peon can't fake — spec-mandated tests audited by reading the test file alone, plus foreman-authored probes the peon never saw. Merge-time enforcement in the script beats prose rules.
+- **Rejected:** a "tokens saved" estimate in `peon report` — the counterfactual never ran; any number is a proxy dressed as telemetry, and a visible metric would nudge farming out small tasks where spec overhead is net-negative. Usage stays observability-only.
+- **Gotcha:** `cmd_diff` silently ignored unknown arguments — an arg-parsing gap that actively fought the method (a foreman asking for `--stat` got the full diff). Strict option parsing everywhere.
+
+### Decisions
+- Implemented the shared tooling core of the untracked draft `docs/superpowers/plans/2026-08-02-test-gated-dispatch.md` (verify-vs-tip-sha, merge refusal, loud bypass) compatibly; its `--lock` path-locking variant stays unimplemented pending its own discussion. `docs/superpowers/` is now gitignored (local-only planning notes).
+- fnmatch allowlist semantics: `*` crosses `/` — documented, deliberate (glob lists stay short).
+
 ## 2026-07-30 — peon-poke: spec → council-reviewed plan → parallel build → live-verified ship
 
 ### Summary
