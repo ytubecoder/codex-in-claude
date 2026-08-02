@@ -116,6 +116,8 @@ The economics of farming work out live or die on acceptance cost, so the treatme
 | **Black-box** — spec + `--allow`/`--verify`, `check`, test audit, independent probes | large spec-driven features | writing the spec; reading only the tests |
 | **Test-gated** — foreman authors failing tests; the peon's task is "make these green" | high-risk work (auth, billing, migrations) | writing the tests themselves |
 
+Picking one is an ordered check, not a judgment call — first hit wins: no runnable suite or style-is-the-point → **classic**; high blast radius (auth, billing, migrations) → **test-gated**; spec cheaper than reading the diff (>5 files / ~300+ lines) → **black-box**; otherwise → **spot**. In doubt, take the tier with more verification, not more diff-reading.
+
 Test-gated dispatch needs no extra flags: commit the tests, run the verify once to prove them red on base, then dispatch with `--verify` pointing at them and an `--allow` that *excludes* the test paths — any peon edit to a test file is then a scope violation, which is the read-only lock. Full detail on the last three: [docs/BLACKBOX-ACCEPTANCE.md](docs/BLACKBOX-ACCEPTANCE.md).
 
 The mechanics live in `bin/peon` — a dependency-light shell script (git + python3 + uuidgen) any orchestrator can call, not just Claude:

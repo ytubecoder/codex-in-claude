@@ -29,7 +29,13 @@ Slugs are globally unique across repos. Exit codes: `1` = usage/environment/prov
 ## Workflow
 
 1. **Scope the task.** Peons execute; they don't design. Good: a feature slice, a refactor, tests, docs — one well-defined chore with clear done-criteria. If the task is ambiguous, tighten it (or brainstorm with the user) before dispatch. Include acceptance criteria and relevant file paths in the task text.
-2. **Pick the review mode BEFORE dispatch** — it changes how you dispatch:
+2. **Pick the review mode BEFORE dispatch** — it changes how you dispatch. Ask in order, first hit wins:
+   1. No runnable verify command in the repo, or style/architecture is the point of the task? → **Classic.**
+   2. Auth, billing, security, migrations, or data-loss blast radius? → **Test-gated.**
+   3. Writing a spec would be cheaper than reading the diff (rule of thumb: expected change spans >5 files or >~300 lines)? → **Black-box.**
+   4. Otherwise → **Spot.**
+
+   In doubt between two tiers, take the one with MORE verification, not more diff-reading. What each means:
    - **Black-box acceptance** (default for spec-driven, multi-file work in a repo with a runnable test suite): write a self-contained spec (all design decisions pre-made, mandated tests with names+assertions, file allowlist, DoD), commit it, then dispatch with `--allow` and `--verify` so the contract is recorded. Full method: `docs/BLACKBOX-ACCEPTANCE.md` in the codex-in-claude repo.
    - **Spot review** (mid-size self-tested chores — too big to read 1:1, too small to spec): brief the peon as a *self-tested work unit* — "add the mandated tests, run them plus the full suite, paste BOTH actual outputs into PEON_REPORT.md". Dispatch with `--verify` (or late-declare it at check time). You will read the diffstat and only the load-bearing hunks, never the full diff. See the Spot review variant in `docs/BLACKBOX-ACCEPTANCE.md`.
    - **Test-gated dispatch** (high-risk escalation of black-box: auth, billing, migrations — where even an audited peon-authored suite isn't enough): YOU author the tests in the orchestration thread, commit them, and run the verify once to prove them red on base. Then dispatch with `--verify` pointing at them and an `--allow` that EXCLUDES the test paths — any peon edit to a test file is a scope violation, i.e. the tests are locked read-only with no extra tooling. Highest orchestrator cost (you write tests, not just read them) — never the default.
