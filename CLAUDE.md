@@ -41,4 +41,5 @@ This repo is the source of truth. Installed copies on this machine live in `~/.c
 ## Open decisions / roadmap
 - Possible rename of repo + both skills (multi-provider name); deliberately deferred.
 - Remote endpoints over tailscale/ssh for both skills: feasibility established, not built. Sessions are per-host, so all rounds/pokes of one review/peon must stick to one endpoint.
-- v2 candidates: dispatch timeout/watchdog; richer `peon list` status.
+- v2 candidates: dispatch timeout/watchdog; richer `peon list` status; an `input-required`-style blocked state (peon has a question) borrowed from A2A's task lifecycle.
+- Test-gated dispatch needs NO new tooling — decided 2026-08-03, don't build: `--allow` excluding test paths is the read-only lock, one pre-dispatch verify run is the red-on-base proof. See the variant in `docs/BLACKBOX-ACCEPTANCE.md`.

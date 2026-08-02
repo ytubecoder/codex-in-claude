@@ -123,9 +123,15 @@ classic full-diff flow.
 ## Variants
 
 - **Test-gated dispatch** (sibling variant): the *foreman* authors the tests,
-  proves they fail red on the base ref, locks them read-only, and the peon's
-  task is "make these pass". Stronger assurance, higher foreman cost. Shares
-  this tooling (`--verify`, `check`, merge gates); adds path-locking.
+  proves they fail red on the base ref, and the peon's task is "make these
+  pass". Strongest assurance, highest foreman cost — the orchestrator pays to
+  WRITE tests, not just read them, so reserve it for high-risk work (auth,
+  billing, migrations) where even an audited peon-authored suite isn't enough.
+  Needs NO extra tooling, deliberately: commit the tests, run the verify
+  command once to see red, then dispatch with `--verify` pointing at them and
+  an `--allow` that EXCLUDES the test paths — any peon edit to a test file is
+  then a scope violation, which IS the read-only lock. The existing gates
+  enforce all of it; don't build a separate feature for this.
 
 - **Spot review** (token-lean middle tier; field-proven 3× on 2026-08-02):
   for mid-size chores where a full spec is overkill but a 1:1 diff read is
