@@ -238,6 +238,22 @@ tf "invalid GROK_APPROVE fails closed" env GROK_APPROVE=bogus "$PEON" dispatch g
 t  "invalid GROK_APPROVE leaves no cmd log" sh -c "test ! -f '$PEON_HOME/logs/ga1.cmd'"
 "$PEON" scrap ga1 >/dev/null 2>&1
 
+# --- usage reporting (parsed from provider logs; self-reported, n/a where absent) ---
+# cdx exists from the dry-run block above (meta provider=codex); hand-craft its log:
+# two cumulative totals (one run) then a counter reset (second run) → banked sum.
+cat > "$PEON_HOME/logs/cdx.codex.jsonl" <<'USAGEEOF'
+{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10}}}
+{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":80,"output_tokens":30}}}
+{"type":"token_count","info":{"total_token_usage":{"input_tokens":50,"cached_input_tokens":0,"output_tokens":5}}}
+USAGEEOF
+t  "codex usage sums run finals"   sh -c "'$PEON' report cdx | grep -qF '~250 in / 35 out (80 cached)'"
+t  "codex usage counts runs"       sh -c "'$PEON' report cdx | grep -q '2 provider run'"
+cat > "$PEON_HOME/logs/agy1.agy.json" <<'USAGEEOF'
+{"conversation_id":"a","status":"SUCCESS","usage":{"promptTokenCount":100,"candidatesTokenCount":20}}
+{"conversation_id":"a","status":"SUCCESS","usage":{"promptTokenCount":300,"candidatesTokenCount":40}}
+USAGEEOF
+t  "agy usage sums per-doc totals" sh -c "'$PEON' report agy1 | grep -qF '~400 in / 60 out'"
+t  "grok usage falls back to n/a"  sh -c "'$PEON' report grk | grep -q 'usage: n/a'"
 unset PEON_DRY_RUN
 
 # --- Task 7: black-box acceptance (check / --allow / --verify / diff modes) ---

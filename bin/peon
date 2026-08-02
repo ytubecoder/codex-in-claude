@@ -283,6 +283,105 @@ cmd_list() {
   done
 }
 
+extract_usage() {  # $1=slug $2=provider — prints a one-line usage summary or exits non-zero
+  # Provider-SELF-REPORTED counts parsed from logs already on disk (zero extra cost).
+  # codex: JSONL with cumulative total_token_usage per run — counter drops mark run
+  # boundaries (dispatch + pokes append to one log); bank each run's final and sum.
+  # agy: one JSON doc per run — take the last usage dict per doc, sum across docs.
+  # grok/gemini: plain-text logs, no token counts — caller prints n/a.
+  # Deliberately NO "savings" estimate: the counterfactual never ran (see
+  # docs/BLACKBOX-ACCEPTANCE.md); fabricated precision is worse than none.
+  local slug="$1" provider="$2" log=""
+  case "$provider" in
+    codex) log="$LOG_ROOT/$slug.codex.jsonl" ;;
+    agy)   log="$LOG_ROOT/$slug.agy.json" ;;
+    *)     return 1 ;;
+  esac
+  [ -f "$log" ] || return 1
+  python3 - "$log" "$provider" <<'PYEOF'
+import json, sys
+path, provider = sys.argv[1], sys.argv[2]
+TOKEN_KEYS = (
+    ("input_tokens", "output_tokens", "cached_input_tokens"),
+    ("prompt_token_count", "candidates_token_count", "cached_content_token_count"),
+    ("promptTokenCount", "candidatesTokenCount", "cachedContentTokenCount"),
+)
+
+def usage_from(d):
+    for inp, out, cache in TOKEN_KEYS:
+        if inp in d and out in d:
+            try:
+                return (int(d[inp]), int(d[out]), int(d.get(cache) or 0))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+def walk(o, acc):
+    if isinstance(o, dict):
+        u = usage_from(o)
+        if u:
+            acc.append(u)
+        for v in o.values():
+            walk(v, acc)
+    elif isinstance(o, list):
+        for i in o:
+            walk(i, acc)
+
+buf = open(path, errors="replace").read()
+docs = []
+for line in buf.splitlines():
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        docs.append(json.loads(line))
+    except ValueError:
+        pass
+if not docs:  # concatenated JSON documents (agy log shape)
+    dec, idx = json.JSONDecoder(), 0
+    while idx < len(buf):
+        while idx < len(buf) and buf[idx] in " \t\r\n":
+            idx += 1
+        if idx >= len(buf):
+            break
+        try:
+            obj, idx = dec.raw_decode(buf, idx)
+        except ValueError:
+            break
+        docs.append(obj)
+if not docs:
+    sys.exit(1)
+
+runs = []
+if provider == "codex":
+    seen = []
+    for d in docs:
+        walk(d, seen)
+    prev = None
+    for u in seen:  # cumulative within a run; a drop marks the next run's start
+        if prev is not None and (u[0] + u[1]) < (prev[0] + prev[1]):
+            runs.append(prev)
+        prev = u
+    if prev is not None:
+        runs.append(prev)
+else:
+    for d in docs:  # one doc per run; last usage dict in the doc is its total
+        seen = []
+        walk(d, seen)
+        if seen:
+            runs.append(seen[-1])
+if not runs:
+    sys.exit(1)
+ti = sum(r[0] for r in runs)
+to = sum(r[1] for r in runs)
+tc = sum(r[2] for r in runs)
+line = "~{:,} in / {:,} out".format(ti, to)
+if tc:
+    line += " ({:,} cached)".format(tc)
+print(line + " tokens across %d provider run(s), self-reported" % len(runs))
+PYEOF
+}
+
 cmd_report() {
   local slug="${1:-}"; [ -n "$slug" ] || die "usage: peon report <slug>"
   local wt base_sha
@@ -303,6 +402,14 @@ cmd_report() {
   echo
   echo "== diffstat vs base =="
   git -C "$wt" diff --stat "$base_sha" HEAD
+  echo
+  local provider usage
+  provider="$(meta_get "$slug" provider)"
+  if usage="$(extract_usage "$slug" "$provider" 2>/dev/null)"; then
+    echo "usage: $usage"
+  else
+    echo "usage: n/a — $provider log carries no parseable token counts"
+  fi
   if [ -n "$(git -C "$wt" status --porcelain)" ]; then
     echo
     echo "== WARNING: uncommitted changes in worktree =="

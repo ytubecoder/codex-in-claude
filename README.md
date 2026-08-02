@@ -108,7 +108,8 @@ The mechanics live in `bin/peon` — a dependency-light shell script (git + pyth
 ```
 peon dispatch <codex|grok|gemini|agy> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
               [--allow "glob[,glob...]"] [--verify "cmd"]
-peon list | report <slug> | diff <slug> [--stat|--files]
+peon list | report <slug> | diff <slug> [--stat|--files]   # report includes provider-reported token usage
+
 peon check <slug>              # contract + scope + foreman-run verify, recorded vs branch tip
 peon poke <slug> "<feedback>"
 peon merge <slug> [--unchecked] | scrap <slug>

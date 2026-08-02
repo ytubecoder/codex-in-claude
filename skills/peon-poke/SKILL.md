@@ -16,7 +16,7 @@ All mechanics live in the `peon` script — never hand-roll worktrees or provide
 |---|---|
 | `peon dispatch <codex\|grok\|gemini\|agy> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force] [--allow "glob[,glob...]"] [--verify "cmd"]` | Create worktree + `peon/<slug>` branch, run the provider inside it. Synchronous — background it to keep working. Fails loudly if the peon breaks contract (no commits / no report / dirty tree), preserving the worktree. `--allow`/`--verify` record the acceptance contract (file-scope allowlist + verify command) that `check` executes and `merge` enforces. |
 | `peon list [--repo DIR]` | Active peons, report status, orphan detection |
-| `peon report <slug>` | PEON_REPORT.md + commits + diffstat vs base (+ dirty-tree warning) |
+| `peon report <slug>` | PEON_REPORT.md + commits + diffstat vs base + provider-self-reported token usage (codex/agy; `n/a` for grok/gemini) (+ dirty-tree warning). Usage is observability only — never quote it as "savings"; the counterfactual is unmeasurable. |
 | `peon diff <slug> [--stat\|--files]` | Diff vs base. `--stat`/`--files` for black-box review (never print the full diff you don't intend to read); bare = full diff for classic review |
 | `peon check <slug> [--allow ...] [--verify ...]` | Mechanical acceptance gates, foreman-side: contract + allowlist scope + verify command run in the worktree (result recorded against the branch tip; a later poke invalidates it). Overrides optional — defaults come from dispatch-recorded metadata. |
 | `peon poke <slug> "<feedback>"` | Resume the same provider session for revisions; fails loudly on a no-op round |
