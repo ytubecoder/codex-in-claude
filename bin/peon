@@ -24,17 +24,25 @@ peon — farm implementation tasks out to external CLI agents in isolated git wo
 
 Usage:
   peon dispatch <codex|grok|gemini|agy> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
+                [--allow "glob[,glob...]"] [--verify "cmd"]
   peon list [--repo DIR]
   peon report <slug>
-  peon diff <slug>
+  peon diff <slug> [--stat|--files]
+  peon check <slug> [--allow "glob[,glob...]"] [--verify "cmd"]
   peon poke <slug> "<feedback>"
-  peon merge <slug> [--into BRANCH]  # --into asserts the branch already checked out; peon never switches your branch
+  peon merge <slug> [--into BRANCH] [--unchecked]  # --into asserts the branch already checked out; peon never switches your branch
   peon scrap <slug>
   peon help
 
 Peon branches are named peon/<slug>; worktrees live under $PEON_HOME/worktrees
 and metadata under $PEON_HOME/meta (default ~/.peon). Slugs are globally unique.
 Nothing reaches your working tree without 'peon merge' (which reviews demand first).
+
+Black-box acceptance (docs/BLACKBOX-ACCEPTANCE.md): declare the contract at
+dispatch (--allow file-scope globs, --verify test command), then 'peon check'
+runs the mechanical gates foreman-side — contract, scope, verify — and records
+the verify result against the branch tip. 'peon merge' refuses out-of-scope
+files and stale/failed/missing verify runs unless --unchecked is passed.
 EOF
 }
 
@@ -90,9 +98,24 @@ write_meta() {
   "base_sha": "$base_sha",
   "branch": "peon/$slug",
   "task": $(json_str "$task"),
+  "allow": $(json_str "$allow"),
+  "verify": $(json_str "$verify"),
   "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
+}
+
+update_meta_field() {  # $1=slug $2=key $3=value — atomic single-key update
+  python3 - "$META_ROOT/$1.json" "$2" "$3" <<'PYEOF'
+import json, os, sys
+p, k, v = sys.argv[1:4]
+m = json.load(open(p))
+m[k] = v
+tmp = p + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(m, f, indent=2)
+os.replace(tmp, p)
+PYEOF
 }
 
 update_meta_session() {
@@ -141,19 +164,21 @@ run_fake() {
 }
 
 cmd_dispatch() {
-  local provider="" task="" repo="$PWD" base="HEAD" slug="" force=0
+  local provider="" task="" repo="$PWD" base="HEAD" slug="" force=0 allow="" verify=""
   provider="${1:-}"; shift || true
   task="${1:-}"; shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo)  [ -n "${2:-}" ] || die "--repo needs a value"; repo="$2"; shift 2 ;;
-      --base)  [ -n "${2:-}" ] || die "--base needs a value"; base="$2"; shift 2 ;;
-      --slug)  [ -n "${2:-}" ] || die "--slug needs a value"; slug="$2"; shift 2 ;;
-      --force) force=1; shift ;;
+      --repo)   [ -n "${2:-}" ] || die "--repo needs a value"; repo="$2"; shift 2 ;;
+      --base)   [ -n "${2:-}" ] || die "--base needs a value"; base="$2"; shift 2 ;;
+      --slug)   [ -n "${2:-}" ] || die "--slug needs a value"; slug="$2"; shift 2 ;;
+      --allow)  [ -n "${2:-}" ] || die "--allow needs a value"; allow="$2"; shift 2 ;;
+      --verify) [ -n "${2:-}" ] || die "--verify needs a value"; verify="$2"; shift 2 ;;
+      --force)  force=1; shift ;;
       *) die "unknown dispatch option: $1" ;;
     esac
   done
-  [ -n "$provider" ] || die "usage: peon dispatch <codex|grok|gemini|agy> \"<task>\" [--repo DIR] [--base REF] [--slug NAME] [--force]"
+  [ -n "$provider" ] || die "usage: peon dispatch <codex|grok|gemini|agy> \"<task>\" [--repo DIR] [--base REF] [--slug NAME] [--force] [--allow \"glob[,glob...]\"] [--verify \"cmd\"]"
   [ -n "$task" ] || die "no task given"
   case "$provider" in
     codex|grok|gemini|agy)
@@ -286,11 +311,122 @@ cmd_report() {
 }
 
 cmd_diff() {
-  local slug="${1:-}"; [ -n "$slug" ] || die "usage: peon diff <slug>"
+  local slug="${1:-}"; [ -n "$slug" ] || die "usage: peon diff <slug> [--stat|--files]"
+  shift || true
+  local mode="full"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --stat)  mode="stat"; shift ;;
+      --files) mode="files"; shift ;;
+      *) die "unknown diff option: $1 (--stat for diffstat, --files for name-status; black-box reviews never need the full diff)" ;;
+    esac
+  done
   local wt
   wt="$(find_wt "$slug")"
   require_wt "$wt" "$slug"
-  git -C "$wt" diff "$(meta_get "$slug" base_sha)" HEAD
+  case "$mode" in
+    stat)  git -C "$wt" diff --stat "$(meta_get "$slug" base_sha)" HEAD ;;
+    files) git -C "$wt" diff --name-status "$(meta_get "$slug" base_sha)" HEAD ;;
+    full)  git -C "$wt" diff "$(meta_get "$slug" base_sha)" HEAD ;;
+  esac
+}
+
+scope_violations() {  # $1=wt $2=base_sha $3=allow-globs (comma-separated) — prints out-of-scope paths
+  # fnmatch semantics: '*' crosses '/' (so tests/* covers tests/sub/x). PEON_REPORT.md
+  # is always in scope — it is the contract artifact, not product code.
+  git -C "$1" diff --name-only "$2" HEAD | python3 -c '
+import fnmatch, sys
+allow = [g.strip() for g in sys.argv[1].split(",") if g.strip()]
+for path in sys.stdin.read().splitlines():
+    if path == "PEON_REPORT.md":
+        continue
+    if not any(fnmatch.fnmatch(path, g) for g in allow):
+        print(path)
+' "$3"
+}
+
+cmd_check() {
+  local slug="${1:-}"; [ -n "$slug" ] || die "usage: peon check <slug> [--allow \"glob[,glob...]\"] [--verify \"cmd\"]"
+  shift || true
+  local allow="" verify="" have_allow=0 have_verify=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --allow)  [ -n "${2:-}" ] || die "--allow needs a value"; allow="$2"; have_allow=1; shift 2 ;;
+      --verify) [ -n "${2:-}" ] || die "--verify needs a value"; verify="$2"; have_verify=1; shift 2 ;;
+      *) die "unknown check option: $1" ;;
+    esac
+  done
+  local wt base_sha fails=0
+  wt="$(find_wt "$slug")"
+  require_wt "$wt" "$slug"
+  base_sha="$(meta_get "$slug" base_sha)"
+  [ "$have_allow" -eq 1 ]  || allow="$(meta_get "$slug" allow 2>/dev/null || true)"
+  [ "$have_verify" -eq 1 ] || verify="$(meta_get "$slug" verify 2>/dev/null || true)"
+
+  echo "== peon check: $slug =="
+
+  # Contract — same invariants the dispatch/poke gate enforces, re-checked now.
+  if [ "$(git -C "$wt" rev-list --count "$base_sha..HEAD")" -ge 1 ]; then
+    echo "contract: commits since base ........ ok ($(git -C "$wt" rev-list --count "$base_sha..HEAD"))"
+  else
+    echo "contract: commits since base ........ FAIL (none)"; fails=$((fails+1))
+  fi
+  if git -C "$wt" cat-file -e "HEAD:PEON_REPORT.md" 2>/dev/null; then
+    echo "contract: report committed .......... ok"
+  else
+    echo "contract: report committed .......... FAIL"; fails=$((fails+1))
+  fi
+  if [ -z "$(git -C "$wt" status --porcelain)" ]; then
+    echo "contract: worktree clean ............ ok"
+  else
+    echo "contract: worktree clean ............ FAIL (uncommitted changes)"; fails=$((fails+1))
+  fi
+
+  # Scope — every touched file must match the allowlist.
+  if [ -n "$allow" ]; then
+    local viol
+    viol="$(scope_violations "$wt" "$base_sha" "$allow")"
+    if [ -z "$viol" ]; then
+      echo "scope: allowlist [$allow] ........... ok ($(git -C "$wt" diff --name-only "$base_sha" HEAD | wc -l | tr -d ' ') files)"
+    else
+      echo "scope: allowlist [$allow] ........... FAIL — out-of-scope files:"
+      printf '%s\n' "$viol" | sed 's/^/    /'
+      fails=$((fails+1))
+    fi
+  else
+    echo "scope: ............................. skipped (no allowlist recorded or passed)"
+  fi
+
+  # Verify — run foreman-side, never trusted from the report. Result is recorded
+  # against the branch tip so 'peon merge' can refuse stale or failed runs.
+  if [ -n "$verify" ]; then
+    local vout="$LOG_ROOT/$slug.verify.log" vexit=0 vsha
+    mkdir -p "$LOG_ROOT"
+    vsha="$(git -C "$wt" rev-parse HEAD)"
+    ( cd "$wt" && sh -c "$verify" ) > "$vout" 2>&1 || vexit=$?
+    update_meta_field "$slug" verify_exit "$vexit"
+    update_meta_field "$slug" verify_sha "$vsha"
+    update_meta_field "$slug" verify_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ "$vexit" -eq 0 ]; then
+      echo "verify: $verify ..................... ok (exit 0)"
+    else
+      echo "verify: $verify ..................... FAIL (exit $vexit)"; fails=$((fails+1))
+    fi
+    tail -n 8 "$vout" | sed 's/^/    /'
+  else
+    echo "verify: ............................ skipped (no verify command recorded or passed)"
+  fi
+
+  echo
+  if [ "$fails" -eq 0 ]; then
+    echo "mechanical gates passed. Remaining HUMAN gates before merge (docs/BLACKBOX-ACCEPTANCE.md):"
+    echo "  1. read ONLY the test files the peon touched — audit mandated coverage, not implementation"
+    echo "  2. run independent probes the peon has never seen"
+    echo "  3. then: peon poke $slug \"<finding>\"  or  peon merge $slug"
+  else
+    echo "check FAILED ($fails gate(s)) — 'peon poke $slug' with the findings, or 'peon scrap $slug'"
+    return 1
+  fi
 }
 
 poke_prompt() {
@@ -354,12 +490,13 @@ cleanup_peon() {
 }
 
 cmd_merge() {
-  local slug="${1:-}" into=""
-  [ -n "$slug" ] || die "usage: peon merge <slug> [--into BRANCH]"
+  local slug="${1:-}" into="" unchecked=0
+  [ -n "$slug" ] || die "usage: peon merge <slug> [--into BRANCH] [--unchecked]"
   shift || true
   while [ $# -gt 0 ]; do
     case "$1" in
       --into) [ -n "${2:-}" ] || die "--into needs a value"; into="$2"; shift 2 ;;
+      --unchecked) unchecked=1; shift ;;
       *) die "unknown merge option: $1" ;;
     esac
   done
@@ -373,6 +510,31 @@ cmd_merge() {
     || die "peon worktree has uncommitted changes — 'peon poke $slug' to have them committed, or 'peon scrap $slug' to discard"
   [ "$(git -C "$wt" rev-parse HEAD)" = "$(git -C "$repo" rev-parse "refs/heads/$branch")" ] \
     || die "worktree HEAD is not at the tip of $branch — the peon left its branch; refusing to merge a partial tree ('peon report $slug' to inspect)"
+  # Recorded acceptance gates (docs/BLACKBOX-ACCEPTANCE.md). --unchecked bypasses, loudly.
+  if [ "$unchecked" -eq 0 ]; then
+    local allow verify verify_exit verify_sha
+    allow="$(meta_get "$slug" allow 2>/dev/null || true)"
+    verify="$(meta_get "$slug" verify 2>/dev/null || true)"
+    if [ -n "$allow" ]; then
+      local viol
+      viol="$(scope_violations "$wt" "$(meta_get "$slug" base_sha)" "$allow")"
+      [ -z "$viol" ] || die "scope violation — files outside the dispatch allowlist [$allow]:
+$(printf '%s\n' "$viol" | sed 's/^/  /')
+'peon poke $slug' to have them reverted, or 'peon merge $slug --unchecked' to accept anyway"
+    fi
+    if [ -n "$verify" ]; then
+      verify_exit="$(meta_get "$slug" verify_exit 2>/dev/null || true)"
+      verify_sha="$(meta_get "$slug" verify_sha 2>/dev/null || true)"
+      [ -n "$verify_exit" ] \
+        || die "verify command recorded but never run — 'peon check $slug' first (or 'peon merge $slug --unchecked')"
+      [ "$verify_exit" = "0" ] \
+        || die "last verify FAILED (exit $verify_exit) — 'peon poke $slug' with the failure, re-'peon check $slug', or --unchecked"
+      [ "$verify_sha" = "$(git -C "$wt" rev-parse HEAD)" ] \
+        || die "verify result is stale (ran on $(printf '%.8s' "$verify_sha"), tip is $(git -C "$wt" rev-parse --short HEAD)) — re-run 'peon check $slug' (or --unchecked)"
+    fi
+  else
+    echo "peon: WARNING: --unchecked — skipping recorded scope/verify gates for $slug" >&2
+  fi
   require_clean "$repo" "merge target $repo"
   current="$(git -C "$repo" symbolic-ref --short HEAD 2>/dev/null || echo DETACHED)"
   [ "$current" != "DETACHED" ] \
@@ -605,6 +767,7 @@ case "$cmd" in
   list)     cmd_list "$@" ;;
   report)   cmd_report "$@" ;;
   diff)     cmd_diff "$@" ;;
+  check)    cmd_check "$@" ;;
   poke)     cmd_poke "$@" ;;
   merge)    cmd_merge "$@" ;;
   scrap)    cmd_scrap "$@" ;;

@@ -14,12 +14,13 @@ All mechanics live in the `peon` script — never hand-roll worktrees or provide
 
 | Command | Does |
 |---|---|
-| `peon dispatch <codex\|grok\|gemini\|agy> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]` | Create worktree + `peon/<slug>` branch, run the provider inside it. Synchronous — background it to keep working. Fails loudly if the peon breaks contract (no commits / no report / dirty tree), preserving the worktree for inspection. |
+| `peon dispatch <codex\|grok\|gemini\|agy> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force] [--allow "glob[,glob...]"] [--verify "cmd"]` | Create worktree + `peon/<slug>` branch, run the provider inside it. Synchronous — background it to keep working. Fails loudly if the peon breaks contract (no commits / no report / dirty tree), preserving the worktree. `--allow`/`--verify` record the acceptance contract (file-scope allowlist + verify command) that `check` executes and `merge` enforces. |
 | `peon list [--repo DIR]` | Active peons, report status, orphan detection |
 | `peon report <slug>` | PEON_REPORT.md + commits + diffstat vs base (+ dirty-tree warning) |
-| `peon diff <slug>` | Full diff vs base |
+| `peon diff <slug> [--stat\|--files]` | Diff vs base. `--stat`/`--files` for black-box review (never print the full diff you don't intend to read); bare = full diff for classic review |
+| `peon check <slug> [--allow ...] [--verify ...]` | Mechanical acceptance gates, foreman-side: contract + allowlist scope + verify command run in the worktree (result recorded against the branch tip; a later poke invalidates it). Overrides optional — defaults come from dispatch-recorded metadata. |
 | `peon poke <slug> "<feedback>"` | Resume the same provider session for revisions; fails loudly on a no-op round |
-| `peon merge <slug> [--into BRANCH]` | After review: merge, strip the report, clean up. `--into` only asserts BRANCH is already checked out — peon never switches your branch. |
+| `peon merge <slug> [--into BRANCH] [--unchecked]` | After review: merge, strip the report, clean up. Refuses out-of-scope files and failed/stale/missing verify when a contract was recorded; `--unchecked` bypasses loudly. `--into` only asserts BRANCH is already checked out — peon never switches your branch. |
 | `peon scrap <slug>` | Discard the work, remove worktree + branch + metadata |
 
 Slugs are globally unique across repos. Grok approval strategy is `GROK_APPROVE` (`mode:<m>` or `always`). Gemini peons run `--approval-mode yolo` (required for headless commits) and resume as `--resume latest` scoped to the worktree — never run your own gemini session inside a peon worktree, or the poke will resume the wrong session. `agy` (Antigravity) is the provider for Google AI Pro/Ultra subscriptions — gemini-cli stopped serving consumer accounts on 2026-06-18; when the user says "gemini" for labor and only `agy` works on this machine, dispatch `agy`. State (worktrees, logs, metadata) lives under `~/.peon/` by default, overridable via `PEON_HOME`.
@@ -27,14 +28,19 @@ Slugs are globally unique across repos. Grok approval strategy is `GROK_APPROVE`
 ## Workflow
 
 1. **Scope the task.** Peons execute; they don't design. Good: a feature slice, a refactor, tests, docs — one well-defined chore with clear done-criteria. If the task is ambiguous, tighten it (or brainstorm with the user) before dispatch. Include acceptance criteria and relevant file paths in the task text.
-2. **Dispatch.** One peon per task. Parallel peons = *different* tasks (never the same task to two providers — that's plan-check's council, not labor). Provider: user's choice if stated, else either. Dirty repo? Ask the user before `--force` — dispatch branches from the last *commit*, so uncommitted work is invisible to the peon.
-3. **Wait.** Dispatch is synchronous (minutes). Background it and continue other work, or wait if idle. If a dispatch hangs (stuck provider), kill the process and `peon scrap` the slug — the worktree holds whatever happened.
-4. **Review like a code review.** `peon report <slug>`, then `peon diff <slug>`. Judge correctness, conventions, tests, scope-creep against your conversation context — you know things the peon does not. Then either `peon poke <slug> "<specific feedback>"` (repeatable) or `peon merge <slug>`.
-5. **Report to the user.** Summarize what the peon did, your review verdict, and what you merged or why you poked/scrapped.
+2. **Pick the review mode BEFORE dispatch** — it changes how you dispatch:
+   - **Black-box acceptance** (default for spec-driven, multi-file work in a repo with a runnable test suite): write a self-contained spec (all design decisions pre-made, mandated tests with names+assertions, file allowlist, DoD), commit it, then dispatch with `--allow` and `--verify` so the contract is recorded. Full method: `docs/BLACKBOX-ACCEPTANCE.md` in the codex-in-claude repo.
+   - **Classic full-diff review** (small chores, no test harness, or style/architecture is the point): dispatch with the criteria in the task text; you will read the whole diff.
+3. **Dispatch.** One peon per task. Parallel peons = *different* tasks (never the same task to two providers — that's plan-check's council, not labor). Provider: user's choice if stated, else either. Dirty repo? Ask the user before `--force` — dispatch branches from the last *commit*, so uncommitted work is invisible to the peon. While a black-box peon works, pre-author your independent probes — the wait is free.
+4. **Review.**
+   - *Black-box:* `peon report <slug>` → `peon check <slug>` (contract + scope + foreman-run verify; never trust the report's pasted test output) → `peon diff <slug> --files` → read ONLY the test files against the spec's mandated list (really asserting, no tautologies, no test-gaming) → run your independent probes in the worktree. Do NOT read the implementation diff — that's the token sink this mode exists to avoid.
+   - *Classic:* `peon report <slug>`, then `peon diff <slug>`. Judge correctness, conventions, tests, scope-creep against your conversation context — you know things the peon does not.
+   Then either `peon poke <slug> "<specific feedback>"` (repeatable; re-run `check` after — a poke invalidates the recorded verify) or `peon merge <slug>`.
+5. **Report to the user.** Summarize what the peon did, your review verdict (which mode, which gates), and what you merged or why you poked/scrapped.
 
 ## Rules
 
-- **Never merge without reviewing the diff.** Draft-until-reviewed is the whole point.
+- **Every merge gets exactly one review treatment: the full-diff read (classic) or the complete black-box gate set (check + test audit + probes). Never neither.** Draft-until-reviewed is the whole point; `merge` mechanically enforces recorded scope/verify gates, and `--unchecked` is for deliberate, stated overrides only.
 - **Never bypass the script** to poke provider sessions or touch `peon/*` branches by hand.
 - Peons are sandboxed to their worktree and may lack network access — don't dispatch tasks needing `npm install` of new deps without checking the result carefully.
 - A failed peon leaves its worktree AND metadata for inspection: `peon report` still works; `peon scrap` cleans up. Logs live in `~/.peon/logs/` and are removed on merge/scrap; a long-ignored failed peon is the only thing that accumulates — `peon list` surfaces them.

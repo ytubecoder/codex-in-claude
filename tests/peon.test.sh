@@ -240,5 +240,36 @@ t  "invalid GROK_APPROVE leaves no cmd log" sh -c "test ! -f '$PEON_HOME/logs/ga
 
 unset PEON_DRY_RUN
 
+# --- Task 7: black-box acceptance (check / --allow / --verify / diff modes) ---
+fresh_home
+R="$(mkrepo)"
+t  "dispatch with gates ok"        "$PEON" dispatch fake "gated work" --repo "$R" --slug bx --allow "FAKE_WORK-*.txt" --verify "true"
+t  "meta records allow"            sh -c "grep -qF '\"allow\": \"FAKE_WORK-*.txt\"' '$PEON_HOME/meta/bx.json'"
+t  "meta records verify"           sh -c "grep -qF '\"verify\": \"true\"' '$PEON_HOME/meta/bx.json'"
+t  "diff --stat shows file"        sh -c "'$PEON' diff bx --stat | grep -q 'FAKE_WORK-bx.txt'"
+t  "diff --stat hides content"     sh -c "! '$PEON' diff bx --stat | grep -q '^+++'"
+t  "diff --files shows status"     sh -c "'$PEON' diff bx --files | grep -qE '^A[[:space:]]+FAKE_WORK-bx.txt'"
+tf "diff rejects unknown option"   "$PEON" diff bx --statt
+tf "merge refuses unrun verify"    "$PEON" merge bx
+t  "check passes"                  "$PEON" check bx
+t  "check records verify pass"     sh -c "grep -qF '\"verify_exit\": \"0\"' '$PEON_HOME/meta/bx.json'"
+tf "check --allow override fails on scope" "$PEON" check bx --allow "docs/*"
+tf "check --verify override fails on cmd"  "$PEON" check bx --verify false
+tf "merge refuses failed verify"   "$PEON" merge bx
+t  "re-check restores pass"        "$PEON" check bx
+t  "poke after check ok"           "$PEON" poke bx "tweak"
+tf "merge refuses stale verify"    "$PEON" merge bx
+t  "check after poke ok"           "$PEON" check bx
+t  "merge lands gated work"        "$PEON" merge bx
+# scope violation: fake work writes FAKE_WORK-*.txt, allowlist says docs/* only
+"$PEON" dispatch fake "off scope" --repo "$R" --slug offscope --allow "docs/*" >/dev/null 2>&1
+tf "check catches scope violation" "$PEON" check offscope
+tf "merge refuses scope violation" "$PEON" merge offscope
+t  "merge --unchecked bypasses"    "$PEON" merge offscope --unchecked
+# no gates recorded: check skips gracefully, merge unaffected
+"$PEON" dispatch fake "ungated" --repo "$R" --slug ungated >/dev/null 2>&1
+t  "check without gates passes"    "$PEON" check ungated
+t  "ungated merge unaffected"      "$PEON" merge ungated
+
 echo; echo "passed=$PASS failed=$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -99,7 +99,7 @@ Give Claude an implementation chore to delegate ("have codex build the paginatio
 | **1. Scope** | Claude tightens the chore into one well-defined task with acceptance criteria and file paths. Peons execute; they don't design. | Task is unambiguous |
 | **2. Dispatch** | `peon dispatch codex "<task>"` creates the worktree and branch, then runs the provider inside it. | Clean repo, or explicit `--force` |
 | **3. Work** | The peon implements, commits, and files `PEON_REPORT.md`. | **Contract gate:** commits made + report committed + clean tree. Violations fail loudly, worktree preserved for inspection |
-| **4. Review** | `peon report <slug>`, then `peon diff <slug>` — judged like a code review, against conversation context. | Foreman reads the actual diff |
+| **4. Review** | Classic: `peon report <slug>`, then `peon diff <slug>` — judged like a code review. Or **black-box acceptance** for spec-driven work: `peon check <slug>` runs contract + file-scope + verify gates foreman-side; the foreman reads only the tests and runs independent probes, never the full diff ([docs/BLACKBOX-ACCEPTANCE.md](docs/BLACKBOX-ACCEPTANCE.md)). | Full-diff read, or the complete gate set — never neither |
 | **5. Poke** ⟲ | `peon poke <slug> "<feedback>"` resumes the same provider session for revisions. Repeat until right. | No-op revision rounds fail loudly |
 | **6. Merge** | `peon merge <slug>` lands it on your branch, strips the report, cleans up. `peon scrap` discards. | Nothing auto-lands, ever |
 
@@ -107,9 +107,11 @@ The mechanics live in `bin/peon` — a dependency-light shell script (git + pyth
 
 ```
 peon dispatch <codex|grok|gemini|agy> "<task>" [--repo DIR] [--base REF] [--slug NAME] [--force]
-peon list | report <slug> | diff <slug>
+              [--allow "glob[,glob...]"] [--verify "cmd"]
+peon list | report <slug> | diff <slug> [--stat|--files]
+peon check <slug>              # contract + scope + foreman-run verify, recorded vs branch tip
 peon poke <slug> "<feedback>"
-peon merge <slug> | scrap <slug>
+peon merge <slug> [--unchecked] | scrap <slug>
 ```
 
 State lives under `~/.peon/` by default (worktrees, logs, metadata), overridable via `PEON_HOME` — never inside your repo.

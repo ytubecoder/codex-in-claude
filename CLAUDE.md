@@ -18,7 +18,8 @@ This repo is the source of truth. Installed copies on this machine live in `~/.c
 
 ## Invariants — peon-poke
 - Hub-and-spoke: all work products return to the orchestrator; peons never share state.
-- Draft-until-reviewed: peon output stays on `peon/<slug>` branches in `$PEON_HOME/worktrees/`; only explicit `peon merge` (after review) lands it. Never merge without reviewing the diff.
+- Draft-until-reviewed: peon output stays on `peon/<slug>` branches in `$PEON_HOME/worktrees/`; only explicit `peon merge` (after review) lands it. Every merge gets exactly one review treatment — full-diff read (classic) or the complete black-box gate set per `docs/BLACKBOX-ACCEPTANCE.md` (`peon check` + test audit + independent probes) — never neither.
+- Acceptance contract in meta: `--allow` (file-scope globs, fnmatch, `*` crosses `/`) and `--verify` (command) recorded at dispatch. `peon check` executes them foreman-side and records the verify result against the branch tip sha; `peon merge` refuses out-of-scope files and failed/stale/never-run verify (`--unchecked` bypasses with a loud warning). Peon-pasted test output is advisory only — the foreman-run verify is the gate.
 - Metadata is OUT of the worktree: `$PEON_HOME/meta/<slug>.json`, atomically reserved (noclobber) — slugs are global identities. Nothing peon-related is ever written into the user's repo or worktree by the harness.
 - Contract gates after every provider run: commits since gate ref (dispatch: base; poke: pre-poke HEAD) + committed PEON_REPORT.md + clean worktree. Violations fail loudly and preserve the worktree.
 - `bin/peon` is the only interface — skills and agents never hand-roll worktree or provider incantations. bash-3.2-compatible; deps: git, python3, uuidgen. Never jq, never `codex exec resume --last`.
