@@ -107,16 +107,16 @@ The trust model throughout: everything the peon *says* — report prose, pasted 
 
 ### The four review treatments
 
-The economics of farming work out live or die on acceptance cost, so the treatment scales with the task instead of being one-size-fits-all. Whatever you pick, the peon's own words are never the gate — the mechanical gates are.
+The economics of farming work out live or die on acceptance cost, so the treatment scales with the task instead of being one-size-fits-all. The standing gate sits before all of them: delegation must SAVE orchestrator tokens — a task small enough that you'd read the whole diff anyway never goes to a peon; the orchestrator just does it. The verify-backed tiers (spot, black-box, test-gated) are where the savings live: the orchestrator reads tests and hunks, never implementations. Whatever you pick, the peon's own words are never the gate — the mechanical gates are.
 
 | Treatment | For | What the orchestrator spends |
 |---|---|---|
-| **Classic** — read the full diff | small chores; style/architecture is the point | reading the whole diff |
+| **Classic** — read the full diff | suite-less repos or style-is-the-point tasks, only when reading the diff beats producing it | reading the whole diff |
 | **Spot** — foreman-run verify + diffstat + load-bearing hunks | mid-size self-tested chores | a few hunks |
 | **Black-box** — spec + `--allow`/`--verify`, `check`, test audit, independent probes | large spec-driven features | writing the spec; reading only the tests |
-| **Test-gated** — foreman authors failing tests; the peon's task is "make these green" | high-risk work (auth, billing, migrations) | writing the tests themselves |
+| **Test-gated** — foreman authors failing tests; the peon's task is "make these green" | high-risk work (auth, billing, migrations) | writing the tests once — implementations are never read, and every poke round re-gates for free |
 
-Picking one is an ordered check, not a judgment call — first hit wins: no runnable suite or style-is-the-point → **classic**; high blast radius (auth, billing, migrations) → **test-gated**; spec cheaper than reading the diff (>5 files / ~300+ lines) → **black-box**; otherwise → **spot**. In doubt, take the tier with more verification, not more diff-reading.
+Picking one is an ordered check, not a judgment call — first hit wins: so small you'd read the whole diff anyway → **no dispatch** (do it directly); no runnable suite or style-is-the-point, and the diff is still cheaper to read than produce → **classic**; high blast radius (auth, billing, migrations) → **test-gated**; spec cheaper than reading the diff (>5 files / ~300+ lines) → **black-box**; otherwise → **spot**. In doubt, take the tier with more verification, not more diff-reading.
 
 Test-gated dispatch needs no extra flags: commit the tests, run the verify once to prove them red on base, then dispatch with `--verify` pointing at them and an `--allow` that *excludes* the test paths — any peon edit to a test file is then a scope violation, which is the read-only lock. Full detail on the last three: [docs/BLACKBOX-ACCEPTANCE.md](docs/BLACKBOX-ACCEPTANCE.md).
 
