@@ -98,7 +98,7 @@ The trust model throughout: everything the peon *says* — report prose, pasted 
 
 | Step | What happens | Gate |
 |------|-------------|------|
-| **1. Scope** | Claude tightens the chore into one well-defined task with acceptance criteria and file paths. Peons execute; they don't design. | Task is unambiguous |
+| **1. Scope** | Claude tightens the chore into one well-defined task with acceptance criteria and file paths. Peons execute; they don't design. A task so small you'd read its whole diff anyway never dispatches at all — the orchestrator does it directly. | Task is unambiguous AND net token-saving to delegate |
 | **2. Dispatch** | `peon dispatch codex "<task>"` creates the worktree and branch, then runs the provider inside it. | Clean repo, or explicit `--force` |
 | **3. Work** | The peon implements, commits, and files `PEON_REPORT.md`. | **Contract gate:** commits made + report committed + clean tree. Violations fail loudly, worktree preserved for inspection |
 | **4. Review** | One of four treatments, picked by size and risk — classic full-diff read, spot review, black-box acceptance, or test-gated dispatch (table below). | One full treatment per merge — never none |
