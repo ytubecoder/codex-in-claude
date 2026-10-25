@@ -163,7 +163,14 @@ R5="$(mkrepo)"
 WT5="$PEON_HOME/worktrees/$(basename "$R5")-dm"
 echo "wip" > "$WT5/UNCOMMITTED.txt"
 tf "merge refuses dirty worktree"  "$PEON" merge dm
+# a dev server the peon left running in its worktree dies with the worktree; a shell there survives
+( cd "$WT5" && exec sleep 300 ) & LEFTOVER=$!
+( cd "$WT5" && exec sh -c 'while :; do sleep 1; done' ) & PANE=$!
+sleep 1
 t  "scrap discards dirty worktree" "$PEON" scrap dm
+t  "scrap stopped leftover process" sh -c "! kill -0 $LEFTOVER 2>/dev/null || ps -o stat= -p $LEFTOVER | grep -q Z"
+t  "scrap spared shell in worktree" kill -0 "$PANE"
+kill "$PANE" 2>/dev/null; wait "$LEFTOVER" "$PANE" 2>/dev/null
 
 # mid-task provider death: residue preserved, then scrap cleans
 R4="$(mkrepo)"
